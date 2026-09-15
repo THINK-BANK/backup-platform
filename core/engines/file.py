@@ -302,79 +302,253 @@ def _ssh_exec(client, cmd: str, timeout: int = 30) -> Tuple[str, str, int]:
     return out, err, rc
 
 
-def _ssh_exec_pipe(client, cmd: str, input_data: bytes = None, timeout: int = 600):
-    """流式管道执行（用于 tar 数据传输）。stdout 保持原始 bytes 以保真二进制。
+# --------------------------------------------------------------------------- #
+# SSH 数据通道（大流量 dump / 物理备份 tar 的统一实现）
+#
+# 旧实现在这里踩过三个性能坑，10GB 级备份会慢到几百 KB/s 且必然超时：
+#   1) `out += sess.recv(65536)`：bytes 不可变，每轮追加都要把**已有全部数据**
+#      重新拷贝一遍（O(n²)）。累积到 1.4GB 时单次追加要 memcpy 1.4GB，
+#      有效吞吐直接掉到几百 KB/s——数据量越大越慢，与用户实测完全吻合。
+#   2) 每轮最多读 64KB，且无数据时固定 `sleep(0.05)`：等效限速约 1.3MB/s。
+#   3) 全量 dump 先在内存里攒成 bytes 再落盘：10GB 数据 → 内存/交换爆掉。
+# 现统一为：可流式落盘（内存恒定）+ 256KB 块 + 2ms 空转 + 传输窗口调优。
+# --------------------------------------------------------------------------- #
 
-    timeout: 最大等待秒数，超时抛 RuntimeError。默认 600 秒（10 分钟）。
+_SSH_CHUNK = 256 * 1024          # 单次 recv 块大小
+_SSH_WINDOW_MB = 16              # SSH 传输窗口（paramiko 默认 2MB）
+_SSH_PACKET_KB = 128             # SSH 单包上限（paramiko 默认 32KB）
 
-    失败可排查：命令、耗时、退出码、stderr 全文均写入操作日志；
-    超时会记录"已等待多久、已传输多少字节、命令是什么"，用于判断卡在哪。
+
+def _tune_ssh_transport(client, window_mb: int = _SSH_WINDOW_MB,
+                        packet_kb: int = _SSH_PACKET_KB) -> None:
+    """调大 SSH 传输窗口与单包大小，消除大流量下的窗口等待瓶颈。
+
+    paramiko 默认窗口 2MB / 单包 32KB：在高带宽或跨机房（高 RTT）链路上，
+    窗口不足会让发送端频繁停下来等 window adjust，实测吞吐被压在个位数
+    MB/s。放宽到 16MB / 128KB，由协议协商自动收敛到对端能力。
+    """
+    try:
+        t = client.get_transport()
+        if t is None:
+            return
+        cur_w = int(getattr(t, "default_window_size", 0) or 0)
+        cur_p = int(getattr(t, "default_max_packet_size", 0) or 0)
+        t.default_window_size = max(cur_w, window_mb * 1024 * 1024)
+        t.default_max_packet_size = max(cur_p, packet_kb * 1024)
+    except Exception:
+        pass
+
+
+def _ssh_exec_stream(client, cmd: str, *, out_file=None, timeout: int = 0,
+                     idle_timeout: int = 0, input_data: bytes = None,
+                     note: str = "SSH 数据管道", label: str = "",
+                     progress_every: float = 30.0, rate_kbps: int = 0,
+                     want_digest: bool = True) -> dict:
+    """统一的 SSH 数据通道：执行命令并流式接收 stdout。
+
+    参数：
+      out_file      可写文件对象。给定时**边收边写盘**（内存恒定），
+                    不给则把 stdout 累积为 bytes 返回（兼容旧调用）。
+      timeout       总时长上限（秒）；0 = 不限（大库备份推荐，由任务配置决定）。
+      idle_timeout  空闲上限（秒）：连续 N 秒没有任何 stdin/stdout 数据则判失败。
+                    0 = 不限。用于区分"大表读取慢"与"真卡死"。
+      rate_kbps     平台侧限速（KB/s，0=不限），不依赖远端 pv。
+      progress_every 进度日志间隔（秒）。
+
+    返回 dict(out, err, rc, written, cost, sha256, speed_mbps)。
     """
     import time as _time
     t = client.get_transport()
     if not t or not t.is_active():
         raise RuntimeError("SSH transport dead")
+    _tune_ssh_transport(client)
     in_len = 0
     if input_data:
         if isinstance(input_data, str):
             input_data = input_data.encode("utf-8")
         in_len = len(input_data)
-    t0 = _remote_log_start(cmd, timeout, note="SSH 数据管道", input_len=in_len)
+    t0 = _remote_log_start(cmd, timeout, note=note, input_len=in_len)
     sess = t.open_session()
     sess.exec_command(cmd)
     if input_data:
         sess.sendall(input_data)
         sess.shutdown_write()
-    out, err = b"", b""
+
+    buf = None if out_file is not None else bytearray()
+    err = bytearray()
+    digest = hashlib.sha256() if want_digest else None
+    written = 0
     start = _time.time()
-    last_heartbeat = start
-    while not sess.exit_status_ready():
-        if _time.time() - start > timeout:
+    last_data = start
+    last_hb = start
+    hb_bytes = 0
+    timed_out = ""
+    try:
+        while True:
+            got = False
+            if sess.recv_ready():
+                chunk = sess.recv(_SSH_CHUNK)
+                if chunk:
+                    got = True
+                    if buf is None:
+                        out_file.write(chunk)
+                    else:
+                        buf += chunk
+                    written += len(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
+                    last_data = _time.time()
+                    # 平台侧限速（不依赖远端 pv；按"应耗时"补 sleep）
+                    if rate_kbps > 0:
+                        expect = written / (rate_kbps * 1024.0)
+                        drift = expect - (_time.time() - start)
+                        if drift > 0.05:
+                            _time.sleep(min(drift, 2.0))
+            if sess.recv_stderr_ready():
+                _e = sess.recv_stderr(8192)
+                if _e:
+                    err += _e
+                    last_data = _time.time()
+            now = _time.time()
+            # 进度心跳：让运维在大库备份中能看到"还在动、多快"
+            if progress_every and now - last_hb >= progress_every:
+                seg = written - hb_bytes
+                spd = seg / max(now - last_hb, 0.001) / (1024 * 1024)
+                try:
+                    import logging as _lg
+                    _lg.getLogger("engine.file").info(
+                        "SSH 传输进度: 已收 %s, 速率 %.1f MB/s, 耗时 %.0fs%s",
+                        db.human_size(written), spd, now - start,
+                        f" [{label}]" if label else "")
+                    from core import oplog
+                    op = oplog.current()
+                    if op:
+                        op.info("SSH 传输进度: 已收 %s（速率 %.1f MB/s，耗时 %.0fs）%s",
+                                db.human_size(written), spd, now - start,
+                                f" [{label}]" if label else "")
+                except Exception:
+                    pass
+                last_hb = now
+                hb_bytes = written
+            if sess.exit_status_ready() and not sess.recv_ready():
+                break
+            if timeout and (now - start) > timeout:
+                timed_out = (f"SSH 命令超时（{timeout}s，已收 {db.human_size(written)}）："
+                             f"{cmd[:120]}")
+                raise RuntimeError(timed_out)
+            if idle_timeout and (now - last_data) > idle_timeout:
+                timed_out = (f"SSH 数据流空闲超时（{idle_timeout}s 无任何输出，"
+                             f"已收 {db.human_size(written)}）：{cmd[:120]}")
+                raise RuntimeError(timed_out)
+            if not got:
+                _time.sleep(0.002)   # 数据充足时不会走到这里
+        # 排空剩余缓冲区（exit-status 已到但通道里可能还有尾巴）
+        while sess.recv_ready():
+            chunk = sess.recv(_SSH_CHUNK)
+            if not chunk:
+                break
+            if buf is None:
+                out_file.write(chunk)
+            else:
+                buf += chunk
+            written += len(chunk)
+            if digest is not None:
+                digest.update(chunk)
+        while sess.recv_stderr_ready():
+            err += sess.recv_stderr(8192)
+        rc = sess.recv_exit_status()
+    except Exception as e:
+        try:
             sess.close()
-            try:
-                from core import oplog
-                op = oplog.current()
-                if op:
-                    op.error("SSH 命令超时（%ss）：已等待 %.0fs，已收 stdout %d 字节、"
-                             "stderr %d 字节\nstderr 尾部: %s",
-                             timeout, _time.time() - start, len(out), len(err),
-                             err.decode("utf-8", "replace")[-1500:])
-            except Exception:
-                pass
-            raise RuntimeError(f"SSH 命令超时({timeout}s): {cmd[:80]}")
-        # 每 30s 输出一次心跳（仅在确实没有数据流动时）
-        now = _time.time()
-        if now - last_heartbeat >= 30:
-            import logging as _lg
-            _lg.getLogger("engine.file").info(
-                "SSH 心跳: 已等待 %.0fs, 已收 %d bytes (err %d) cmd=%s",
-                now-start, len(out), len(err), cmd[:60])
-            try:
-                from core import oplog
-                op = oplog.current()
-                if op:
-                    op.info("SSH 心跳: 已等待 %.0fs, 已收 %d bytes (err %d)",
-                            now - start, len(out), len(err))
-            except Exception:
-                pass
-            last_heartbeat = now
-        if sess.recv_ready():
-            out += sess.recv(65536)
-        elif sess.recv_stderr_ready():
-            err += sess.recv_stderr(4096)
-        else:
-            _time.sleep(0.05)  # 无数据时短暂 sleep 避免 CPU 空转
-    # 排空剩余缓冲区
-    while sess.recv_ready():
-        out += sess.recv(65536)
-    while sess.recv_stderr_ready():
-        err += sess.recv_stderr(4096)
-    rc = sess.recv_exit_status()
-    sess.close()
+        except Exception:
+            pass
+        cost = _time.time() - t0
+        err_text = err.decode("utf-8", errors="replace")
+        try:
+            from core import oplog
+            op = oplog.current()
+            if op:
+                op.error("SSH 数据通道异常：已收 %s，耗时 %.0fs，stderr 尾部: %s\n%s",
+                         db.human_size(written), cost, err_text[-800:],
+                         str(e)[:300])
+        except Exception:
+            pass
+        raise
+    try:
+        sess.close()
+    except Exception:
+        pass
+    cost = _time.time() - t0
     err_text = err.decode("utf-8", errors="replace")
-    _remote_log_end(rc, out, err_text, _time.time() - t0, binary=True)
-    # stdout 返回原始 bytes（tar.gz 为二进制，绝不能按文本编解码）
-    return out, err_text, rc
+    speed = written / max(cost, 0.001) / (1024 * 1024)
+    if buf is None:
+        _remote_log_end(rc, f"（流式落盘 {written} 字节，平均 {speed:.1f} MB/s）",
+                        err_text, cost, binary=False)
+    else:
+        _remote_log_end(rc, bytes(buf), err_text, cost, binary=True)
+    return {
+        "out": (bytes(buf) if buf is not None else None),
+        "err": err_text,
+        "rc": rc,
+        "written": written,
+        "cost": round(cost, 3),
+        "sha256": (digest.hexdigest() if digest is not None else ""),
+        "speed_mbps": round(speed, 2),
+    }
+
+
+def _ssh_exec_pipe(client, cmd: str, input_data: bytes = None, timeout: int = 600,
+                   idle_timeout: int = 0):
+    """流式管道执行（用于 tar 数据传输）。stdout 保持原始 bytes 以保真二进制。
+
+    timeout: 最大等待秒数，超时抛 RuntimeError。默认 600 秒（10 分钟）；
+             传 0 表示不限总时长（仅由空闲超时兜底），大库备份走任务配置。
+
+    兼容旧签名；内部统一走 _ssh_exec_stream（bytearray 累积，消除旧的
+    O(n²) 拷贝与固定 50ms sleep 限速）。**10GB 级产物请用
+    _ssh_exec_pipe_to_file 直接落盘**（内存恒定 + 可断点续传）。
+    """
+    r = _ssh_exec_stream(client, cmd, out_file=None, timeout=timeout,
+                         idle_timeout=idle_timeout, input_data=input_data,
+                         note="SSH 数据管道")
+    return r["out"], r["err"], r["rc"]
+
+
+def _ssh_exec_pipe_to_file(client, cmd: str, out_path: str, *, timeout: int = 0,
+                           idle_timeout: int = 0, input_data: bytes = None,
+                           label: str = "", rate_kbps: int = 0,
+                           resume: bool = True) -> dict:
+    """执行命令并把 stdout **流式写入本地文件**（内存恒定，支持断点续传）。
+
+    断点续传：out_path 已存在且 resume=True 时，从已有字节数继续追加。
+    返回 dict(written, offset, rc, err, cost, sha256, speed_mbps)；
+    续传场景下 sha256 为空（跨段拼接无法增量计算），由调用方对最终文件算整体哈希。
+    """
+    offset = 0
+    if resume and os.path.exists(out_path):
+        try:
+            offset = os.path.getsize(out_path)
+        except OSError:
+            offset = 0
+    parent = os.path.dirname(out_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    f = open(out_path, "ab" if offset else "wb")
+    try:
+        r = _ssh_exec_stream(
+            client, cmd, out_file=f, timeout=timeout, idle_timeout=idle_timeout,
+            input_data=input_data, note="SSH 数据落盘", label=label,
+            rate_kbps=rate_kbps, want_digest=(offset == 0))
+        try:
+            f.flush()
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+    finally:
+        f.close()
+    r["offset"] = offset + r["written"]
+    r["resume_from"] = offset
+    return r
 
 
 # ---------- 文件列表获取 ----------

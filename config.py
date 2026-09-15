@@ -80,9 +80,19 @@ MARIABACKUP_PATH = os.environ.get("MARIABACKUP_PATH",
 LOGIN_MAX_FAILS = int(os.environ.get("LOGIN_MAX_FAILS", "5"))        # 连续失败次数上限
 LOGIN_LOCK_MINUTES = int(os.environ.get("LOGIN_LOCK_MINUTES", "15"))  # 达到上限后锁定分钟数
 
-# ---------- 备份重试 ----------
-BACKUP_RETRY_MAX = int(os.environ.get("BACKUP_RETRY_MAX", "3"))
-BACKUP_RETRY_DELAY = int(os.environ.get("BACKUP_RETRY_DELAY", "5"))
+# ---------- 备份重试 / 大流量传输（10GB 级备份可完成性） ----------
+BACKUP_RETRY_MAX = int(os.environ.get("BACKUP_RETRY_MAX", "3"))          # 失败重试次数
+BACKUP_RETRY_DELAY = int(os.environ.get("BACKUP_RETRY_DELAY", "5"))      # 兼容旧名
+# 重试间隔（秒）：大库备份失败后立刻重试意义不大，默认 60s 让远端/链路恢复
+BACKUP_RETRY_INTERVAL = int(os.environ.get("BACKUP_RETRY_INTERVAL", "60"))
+# 单次执行总时长上限（秒）：0 = 不限（推荐，大库备份不应被写死的时间砍掉）
+BACKUP_CMD_TIMEOUT = int(os.environ.get("BACKUP_CMD_TIMEOUT", "0"))
+# 空闲上限（秒）：连续这么久没有任何数据流出才判失败（区分"大表读得慢"与"真卡死"）
+BACKUP_IDLE_TIMEOUT = int(os.environ.get("BACKUP_IDLE_TIMEOUT", "1800"))
+# 断点续传（远端落盘 + 平台按 offset 增量拉取，中断后不重跑 dump）
+BACKUP_RESUME_ENABLED = os.environ.get("BACKUP_RESUME_ENABLED", "true").lower() == "true"
+BACKUP_RESUME_TTL = int(os.environ.get("BACKUP_RESUME_TTL", "43200"))    # 断点保留 12h
+BACKUP_REMOTE_STAGE = os.environ.get("BACKUP_REMOTE_STAGE", "/tmp/bk_stage")  # 远端暂存目录
 
 # ---------- 演示/兜底模式 ----------
 # 自 2026-08-14 起不再支持仿真/兜底占位备份；该配置保留为兼容但强制按 off 处理。

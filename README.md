@@ -14,7 +14,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 **备份 · 恢复 · PITR · 数据迁移 · 数据同步 · 数据对比 · 预校验 · 克隆 · 演练 · 巡检 · AI 告警**
 
-[![Version](https://img.shields.io/badge/Version-v1.4.6-0D9488)](#更新日志)
+[![Version](https://img.shields.io/badge/Version-v1.4.7-0D9488)](#更新日志)
 [![License](https://img.shields.io/badge/License-MIT-green)](#许可证)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED)](#docker-部署含离线运行)
@@ -321,7 +321,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 
 ```bash
 docker pull ghcr.io/zhh9126/backup-platform:latest
-docker pull ghcr.io/zhh9126/backup-platform:v1.4.6   # 固定版本（可回滚）
+docker pull ghcr.io/zhh9126/backup-platform:v1.4.7   # 固定版本（可回滚）
 ```
 
 > v1.4.4 起镜像已内置全部运行依赖与备份工具（Python 原生驱动 / JDBC+JRE / xtrabackup / mariabackup 等），`docker run` 开箱即用，无需再外部挂载任何工具目录。
@@ -345,7 +345,7 @@ python tools/check_env.py
 
 ```bash
 # 有网机器导出
-docker save ghcr.io/zhh9126/backup-platform:v1.4.6 -o backup-platform.tar
+docker save ghcr.io/zhh9126/backup-platform:v1.4.7 -o backup-platform.tar
 # 内网机器导入
 docker load -i backup-platform.tar
 ```
@@ -466,6 +466,22 @@ docker build -t backup-platform:local .
 - 默认账号请立即修改（首登会标记 `must_change_password`）；生产环境建议限制来源 IP
 
 ## 更新日志
+
+### v1.4.7（2026-09-15）
+
+- **大库备份提速 + 断点续传（本次重点）**：10GB 级库备份从"必然超时重跑"变为可稳定完成。
+  - **根因定位**：SSH 数据通道旧实现 `out += sess.recv(65536)`——bytes 不可变，每轮追加都要把已有全部数据 memcpy 一遍（O(n²)）。累积到 1.4GB 时单次追加要复制 1.4GB，实测吞吐掉到约 600KB/s（与现场现象吻合）；叠加"每轮最多 64KB + 无数据固定 sleep 50ms"（等效限速约 1.3MB/s）。
+  - **修复**：统一重写为 `_ssh_exec_stream`——流式接收、256KB 块、仅在无数据时 sleep 2ms、SSH 窗口 2MB→16MB / 单包 32KB→128KB；新增 `_ssh_exec_pipe_to_file()` 边收边写盘（内存恒定，不再把 10GB 产物攒在内存里）。
+  - **服务端零安装提速**：限速改由平台侧实现（`rate_kbps`），不再依赖数据库服务器安装 `pv`。
+  - **实测**：300MB 数据流旧实现 17 分钟仍未传完，新实现秒级完成（详见 `docs/backup_perf_20260915.md`）。
+- **断点续传（大库必备）**：MySQL/MariaDB 逻辑备份改为两段式——远端后台 dump 落盘（`setsid nohup`，SSH 断开也继续）+ 平台按 offset 增量拉取（边导出边传）。中断 / 超时 / 平台重启后**从已传字节继续，不重跑 dump**；断点元数据默认保留 12h，成功后自动清理远端暂存与本地半成品。实测：`kill -9` 中断在 208KB，重跑自动续传完成，产物解压 270MB / 52 万行完整一致。
+- **任务级高级选项（超时 / 重试 / 续传）**：新增 5 个字段（执行超时、空闲超时、失败重试间隔、失败重试次数、断点续传开关），存 `extra_options`。
+  - **执行超时默认 0 = 不限**（旧版写死 3600s，10GB 库必然被砍掉后从头重跑）。
+  - **空闲超时默认 1800s**：连续这么久没有任何数据才判失败，区分"大表读得慢"与"真卡死"。
+  - **失败重试间隔默认 60s**、重试次数默认 3（旧版 5s 指数退避，且重试＝从头重跑）。
+  - 全局默认可用环境变量覆盖：`BACKUP_CMD_TIMEOUT` / `BACKUP_IDLE_TIMEOUT` / `BACKUP_RETRY_INTERVAL` / `BACKUP_RESUME_ENABLED` / `BACKUP_RESUME_TTL` / `BACKUP_REMOTE_STAGE`。
+- **可观测性**：SSH 传输与 SFTP 拉取每 30s 输出进度（已传大小 + 速率 MB/s）到操作日志，大库备份不再"黑屏干等"。
+- **修复**：`remote_has_tool` 另起 SSH 连接失败时会被误判成"没装 zstd"→ 改用当前连接 `command -v zstd` 探测，避免大库备份白白丢掉压缩。
 
 ### v1.4.6（2026-09-15）
 

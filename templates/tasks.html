@@ -309,6 +309,43 @@ gunzip -c $PLATFORM_BACKUP_FILE | mysql -h $PLATFORM_DB_HOST -u $PLATFORM_DB_USE
                   </div>
                   <div class="form-text">0 跟随引擎默认（zstd 10）；1~22 自定义压缩级别</div>
                 </div>
+                <div class="col-md-4">
+                  <label class="form-label">执行超时</label>
+                  <div class="input-group input-group-sm">
+                    <input type="number" class="form-control" id="t_cmd_timeout" min="0" value="0">
+                    <span class="input-group-text">秒</span>
+                  </div>
+                  <div class="form-text">0 = 不限时（大库推荐），旧版本固定 3600s 会打断大库备份</div>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">空闲超时</label>
+                  <div class="input-group input-group-sm">
+                    <input type="number" class="form-control" id="t_idle_timeout" min="0" value="0">
+                    <span class="input-group-text">秒</span>
+                  </div>
+                  <div class="form-text">0 = 默认 1800s：连续这么久没有任何数据才判失败</div>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">失败重试间隔</label>
+                  <div class="input-group input-group-sm">
+                    <input type="number" class="form-control" id="t_retry_interval" min="0" value="60">
+                    <span class="input-group-text">秒</span>
+                  </div>
+                  <div class="form-text">默认 60s；配合断点续传，重试不会从头开始</div>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">失败重试次数</label>
+                  <input type="number" class="form-control" id="t_retry_max" min="0" value="3">
+                  <div class="form-text">0 = 不重试；仅网络/超时类错误会重试</div>
+                </div>
+                <div class="col-md-4">
+                  <label class="form-label">断点续传</label>
+                  <div class="form-check form-switch mt-2">
+                    <input class="form-check-input" type="checkbox" id="t_resume_enabled" checked>
+                    <label class="form-check-label" for="t_resume_enabled">中断后从已传字节继续</label>
+                  </div>
+                  <div class="form-text">大库必备：远端落盘 + 平台增量拉取，失败重试不再重跑 dump</div>
+                </div>
                 <div class="col-12">
                   <label class="form-label">自定义环境变量（可选，所有数据库类型生效）</label>
                   <textarea class="form-control form-control-sm font-monospace" id="t_env_vars" rows="3"

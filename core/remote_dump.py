@@ -570,39 +570,73 @@ def _connect_isolated(ssh_host: dict):
 
 # ----------------------------- 远程 DUMP -----------------------------
 
-def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: str = "") -> tuple:
-    """在远端数据库服务器以 mysqldump 导出，返回 (原始字节, 产物格式, 是否压缩)。
-
-    支持四种备份范围（按 extra_options / task.db_name 自动判定）：
-    1) extra.schemas 非空  → --databases schema1 schema2 ...
-    2) extra.tables 非空   → --databases <db_name> table1 table2 ...
-    3) task.db_name 非空   → --databases <db_name>
-    4) 上述都为空          → 全实例（逐库 .sql → tar.gz + manifest，
-                              默认排除系统库；extra.include_system_dbs=true 包含）
-
-    关键修复（paramiko PATH 问题）：
-    1) 先用 _resolve_remote_bin 探测 mysqldump 真实路径（绕开非交互 shell 的 PATH 缺失）
-    2) shell 命令用 _wrap_login 包裹（即 `bash -lc '...'`），强制加载 /etc/profile
-    """
-    client = _connect(ssh_host)
-    sftp = client.open_sftp()
-    cnf_local = tempfile.mktemp(suffix=".cnf")
-    user = task.get("username") or "root"
-    pw = db.decrypt_secret(task.get("password") or "")
-    # 用二进制写，避免 Windows \r\n 被传到远端导致 mysql 客户端解析失败
-    with open(cnf_local, "wb") as f:
-        f.write(f"[client]\nuser={user}\npassword={pw}\n".encode("utf-8"))
-    remote_cnf = "/tmp/bk_rdump.cnf"
-    try:
-        sftp.put(cnf_local, remote_cnf)
+def task_extra_dict(task: dict) -> dict:
+    """解析任务 extra_options（兼容 dict 与 JSON 字符串两种形态）。"""
+    raw = task.get("extra_options")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
         try:
-            sftp.chmod(remote_cnf, 0o600)
+            v = json.loads(raw)
+            return v if isinstance(v, dict) else {}
         except Exception:
-            pass
-    finally:
-        os.remove(cnf_local)
+            return {}
+    return {}
 
-    # 1) 探测 mysqldump 真实路径
+
+def transfer_params(task: dict) -> dict:
+    """解析任务级「大流量传输」参数（高级选项 / extra_options 覆盖全局默认）。
+
+    为什么要这套参数：10GB 级库在受限链路上一次要数小时，而旧实现把 dump
+    超时写死 3600s、重试间隔写死 5s 指数退避，且失败后**从头重跑**。现把这些
+    全部开放到任务级高级选项：
+      cmd_timeout     单次执行总时长上限（秒），0 = 不限（大库备份推荐）
+      idle_timeout    连续无数据输出上限（秒），0 = 不限（区分"大表读得慢"与"真卡死"）
+      retry_max       失败重试次数
+      retry_interval  重试间隔（秒，默认 60）
+      resume          是否启用断点续传（中断后从已传输字节继续，不重跑 dump）
+      rate_kbps       平台侧限速 KB/s（0=不限，不依赖远端 pv）
+    """
+    extra = task_extra_dict(task)
+
+    def _int(*vals, default: int = 0) -> int:
+        for v in vals:
+            if v is None or v == "":
+                continue
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                continue
+        return default
+
+    resume = extra.get("resume_enabled")
+    if resume is None:
+        resume = getattr(config, "BACKUP_RESUME_ENABLED", True)
+    else:
+        resume = str(resume).lower() in ("1", "true", "yes", "on")
+
+    return {
+        "cmd_timeout": _int(extra.get("cmd_timeout"),
+                            getattr(config, "BACKUP_CMD_TIMEOUT", 0), default=0),
+        "idle_timeout": _int(extra.get("idle_timeout"),
+                             getattr(config, "BACKUP_IDLE_TIMEOUT", 1800), default=1800),
+        "retry_max": _int(extra.get("retry_max"),
+                          getattr(config, "BACKUP_RETRY_MAX", 3), default=3),
+        "retry_interval": _int(extra.get("retry_interval"),
+                               getattr(config, "BACKUP_RETRY_INTERVAL", 60), default=60),
+        "resume": bool(resume),
+        "resume_ttl": _int(getattr(config, "BACKUP_RESUME_TTL", 43200), default=43200),
+        "rate_kbps": _int(task.get("bandwidth_limit"), default=0),
+    }
+
+
+def _resolve_mysql_dump_bin(client, task: dict, remote_cnf: str) -> str:
+    """探测远端 mysqldump 真实路径，并按 MySQL/MariaDB 风味自动校正。
+
+    必要性：paramiko exec_command 走非交互 shell，PATH 常缺 /usr/local/mysql/bin；
+    同机共存 MySQL 与 MariaDB 客户端时 /usr/bin/mysqldump 可能被 MariaDB 版抢占
+    （--set-gtid-purged 仅 MySQL 支持，风味不匹配会直接 unknown variable 失败）。
+    """
     mysqldump_bin = _resolve_remote_bin(client, "mysqldump")
     if not mysqldump_bin:
         raise RuntimeError(
@@ -610,11 +644,6 @@ def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: st
             "请在远端安装 mysql-client 或 xtrabackup 后重试。"
         )
 
-    # 1.5) MySQL/MariaDB 风味匹配：同一台服务器可能共存两套客户端
-    # （如装了 MariaDB 后 /usr/bin/mysqldump 被 MariaDB 版抢占，而目标是
-    # MySQL）——两者参数集不同（--set-gtid-purged 仅 MySQL 有），风味
-    # 不匹配会报 unknown variable。用 mysqldump --version 的 -MariaDB
-    # 后缀与 SELECT VERSION() 比对，不匹配则在常见目录自动找匹配版本。
     try:
         from core.engines.file import _ssh_exec_pipe as _sep
         _mysql_cli = os.path.dirname(mysqldump_bin) + "/mysql"
@@ -651,31 +680,37 @@ def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: st
                         break
             except Exception:
                 pass
+    return mysqldump_bin
 
-    # 2) 解析备份范围
+
+def _build_mysql_dump_shell(client, task: dict, ssh_host: dict, mysqldump_bin: str,
+                            remote_cnf: str, compress: int, extra_args: str = "") -> dict:
+    """只负责「组装 mysqldump 命令行」，不负责执行。
+
+    抽出来的原因：旧的「stdout 直传」与新的「远端落盘 + 断点续传」两条通道
+    必须共用同一套参数，否则两边行为会慢慢漂移（--set-gtid-purged、压缩、
+    XML 格式、schema_only/data_only 等一堆分支）。
+
+    返回 dict：
+      fmt     "single"（单库/多库/指定表）或 "multi-db-tar"（全实例逐库 tar）
+      shell   未 wrap 的 shell 片段（fmt=multi-db-tar 时为空串）
+      enable  是否启用 zstd 压缩
+      suffix  建议落盘后缀（.sql.zst / .sql / .tar.gz）
+      port    端口（全实例分支需要）
+      extra   解析后的 extra_options（全实例分支需要）
+    """
     db_name = task.get("db_name") or ""
     port = task.get("port") or 3306
-    # 解析 extra_options（兼容 str/dict）
-    extra = {}
-    raw_eo = task.get("extra_options")
-    if isinstance(raw_eo, dict):
-        extra = raw_eo
-    elif isinstance(raw_eo, str) and raw_eo.strip():
-        try:
-            extra = json.loads(raw_eo)
-        except Exception:
-            extra = {}
+    extra = task_extra_dict(task)
     tables = [str(t).strip() for t in (extra.get("tables") or []) if str(t).strip()]
     schemas = [str(s).strip() for s in (extra.get("schemas") or []) if str(s).strip()]
     schema_only = bool(extra.get("schema_only"))
     data_only = bool(extra.get("data_only"))
-    # 默认开 single-transaction / routines / triggers / events，可通过 extra 显式关
     use_st = extra.get("single_transaction") is not False
     use_routines = extra.get("routines") is not False
     use_triggers = extra.get("triggers") is not False
     use_events = extra.get("events") is not False
 
-    # 3) 组装 mysqldump 参数
     args = [
         mysqldump_bin, f"--defaults-file={remote_cnf}",
         "-h", "127.0.0.1", "-P", str(port),
@@ -686,8 +721,6 @@ def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: st
     if use_events: args.append("--events")
     args.append("--default-character-set=utf8mb4")
 
-    # 备份文件格式（extra_options.dump_format）：sql(默认) / xml(mysqldump --xml)
-    # 说明：XML 产物用于数据交换与人工审阅，平台不提供自动恢复（恢复页会明确拒绝）。
     try:
         from core import dump_format as _dfmt
         _spec = _dfmt.resolve(task.get("db_type") or "mysql", extra, compress=bool(compress))
@@ -697,31 +730,24 @@ def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: st
         pass
 
     if tables:
-        # 指定表：mysqldump <db> t1 t2 ...
         if not db_name:
             raise RuntimeError("指定表（tables）时必须同时填写 task.db_name 库名")
         args.append(db_name)
         args.extend(tables)
     elif schemas:
-        # 指定多库：--databases s1 s2 ...
         args.append("--databases")
         args.extend(schemas)
     elif db_name:
-        # 单库：--databases <db>
         args.append("--databases")
         args.append(db_name)
     else:
-        # 全实例：逐库 .sql → tar.gz（默认排除系统库）
-        data = _remote_mysql_full_instance_tar(
-            client, mysqldump_bin, remote_cnf, int(port), extra)
-        return data, "multi-db-tar", True
+        return {"fmt": "multi-db-tar", "shell": "", "enable": True,
+                "suffix": ".tar.gz", "port": int(port), "extra": extra}
 
     if schema_only:
         args.append("--no-data")
     if data_only:
         args.append("--no-create-info")
-    # 默认禁用 GTID_PURGED；调用方显式传入 extra_args 时优先使用调用方参数。
-    # 用户仍可通过 extra_options.extra_args 或 extra_options.gtid_purged=true 覆盖。
     if extra.get("gtid_purged"):
         pass
     elif extra_args:
@@ -735,11 +761,8 @@ def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: st
         except Exception:
             pass
     else:
-        # 默认禁用 GTID_PURGED；但 MySQL 5.5 及更早无 GTID，
-        # --set-gtid-purged 选项本身不存在会直接报错，故按版本跳过。
         try:
             import re as _re
-            # mysql 客户端通常与 mysqldump 同目录
             _mysql_bin = os.path.dirname(mysqldump_bin) + "/mysql"
             _vshell = (
                 f"{shlex.quote(_mysql_bin)} --defaults-file={shlex.quote(remote_cnf)} "
@@ -751,38 +774,94 @@ def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: st
             _m = _re.search(r"(\d+)\.(\d+)\.", _vres)
             _maj, _min = (int(_m.group(1)), int(_m.group(2))) if _m else (8, 0)
         except Exception:
-            _maj, _min = (8, 0)
+            _maj, _min, _vres = (8, 0), ""
         if (_maj, _min) >= (5, 6) and "mariadb" not in _vres.lower():
-            # MariaDB 的 mysqldump 不支持 --set-gtid-purged（GTID 体系不同）
             args.append("--set-gtid-purged=OFF")
 
-    # 4) 包装 shell：set -o pipefail + bash -lc
     shell = "set -o pipefail; " + " ".join(shlex.quote(a) for a in args)
-    # 统一压缩：与本地逻辑备份对齐，全局开启压缩时走 zstd（而非固定 gzip）
     enable = bool(compress) and getattr(config, "COMPRESS_BY_DEFAULT", True)
-    # 任务级压缩级别（>0 时覆盖默认 10）
     try:
         clvl = int(task.get("compress_level") or 0)
     except (TypeError, ValueError):
         clvl = 0
-    # 远端缺 zstd 时降级为不压缩，避免整条管道 rc=127 导致备份失败
-    if enable and not remote_has_tool(ssh_host, "zstd"):
-        logging.getLogger(__name__).warning(
-            "[remote_dump] 远端主机 %s 未安装 zstd，降级为不压缩（后续安装 zstd 可恢复高压缩率）",
-            ssh_host.get("host") or ssh_host.get("ip"),
-        )
-        enable = False
-    shell += _remote_pv_throttle(task)
+    # 远端缺 zstd 时降级为不压缩（落盘后缀随之改为 .sql，恢复端可直接灌入）。
+    # 注意：用**当前已建立的连接**探测，避免 remote_has_tool 另起连接失败时
+    # 把"连不上"误判成"没装 zstd"——那会让大库备份白白丢掉压缩。
+    if enable:
+        _has_zstd = False
+        try:
+            from core.engines.file import _ssh_exec_pipe as _sep2
+            _zo, _ze, _zrc = _sep2(client, _wrap_login("command -v zstd 2>/dev/null"), timeout=30)
+            _ztxt = _zo.decode("utf-8", "replace") if isinstance(_zo, bytes) else str(_zo or "")
+            _has_zstd = bool(_ztxt.strip()) and _zrc == 0
+        except Exception:
+            _has_zstd = remote_has_tool(ssh_host, "zstd")   # 兜底：另起连接再试一次
+        if not _has_zstd:
+            enable = False
+            logging.getLogger(__name__).warning(
+                "[remote_dump] 远端主机 %s 未检测到 zstd，降级为不压缩",
+                ssh_host.get("host") or ssh_host.get("ip"))
+    # 限速统一由平台侧实现（_ssh_exec_stream.rate_kbps），不再依赖远端 pv
     shell += _remote_compress_pipe(enable, clvl)
-    # 远端未启用压缩时，落盘后缀不使用 .zst，恢复端按普通 sql 处理
-    if not enable:
-        nonlocal_out_suffix = ".sql"
-    else:
-        nonlocal_out_suffix = ".sql.zst"
+    return {"fmt": "single", "shell": shell, "enable": enable,
+            "suffix": (".sql.zst" if enable else ".sql"),
+            "port": int(port), "extra": extra}
+
+
+def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: str = "") -> tuple:
+    """在远端数据库服务器以 mysqldump 导出，返回 (原始字节, 产物格式, 是否压缩)。
+
+    支持四种备份范围（按 extra_options / task.db_name 自动判定）：
+    1) extra.schemas 非空  → --databases schema1 schema2 ...
+    2) extra.tables 非空   → --databases <db_name> table1 table2 ...
+    3) task.db_name 非空   → --databases <db_name>
+    4) 上述都为空          → 全实例（逐库 .sql → tar.gz + manifest，
+                              默认排除系统库；extra.include_system_dbs=true 包含）
+
+    关键修复（paramiko PATH 问题）：
+    1) 先用 _resolve_remote_bin 探测 mysqldump 真实路径（绕开非交互 shell 的 PATH 缺失）
+    2) shell 命令用 _wrap_login 包裹（即 `bash -lc '...'`），强制加载 /etc/profile
+    """
+    client = _connect(ssh_host)
+    sftp = client.open_sftp()
+    cnf_local = tempfile.mktemp(suffix=".cnf")
+    user = task.get("username") or "root"
+    pw = db.decrypt_secret(task.get("password") or "")
+    # 用二进制写，避免 Windows \r\n 被传到远端导致 mysql 客户端解析失败
+    with open(cnf_local, "wb") as f:
+        f.write(f"[client]\nuser={user}\npassword={pw}\n".encode("utf-8"))
+    remote_cnf = "/tmp/bk_rdump.cnf"
+    try:
+        sftp.put(cnf_local, remote_cnf)
+        try:
+            sftp.chmod(remote_cnf, 0o600)
+        except Exception:
+            pass
+    finally:
+        os.remove(cnf_local)
+
+    # 1) 探测 mysqldump 真实路径（含 MySQL/MariaDB 风味校正）
+    mysqldump_bin = _resolve_mysql_dump_bin(client, task, remote_cnf)
+
+    # 2) 组装 mysqldump 命令行（与「远端落盘 + 断点续传」通道共用同一套参数，
+    #    避免两条通道的 --set-gtid-purged / 压缩 / 格式分支各自漂移）
+    spec = _build_mysql_dump_shell(client, task, ssh_host, mysqldump_bin,
+                                   remote_cnf, compress, extra_args)
+    if spec["fmt"] == "multi-db-tar":
+        # 全实例：逐库 .sql → tar.gz（默认排除系统库）
+        data = _remote_mysql_full_instance_tar(
+            client, mysqldump_bin, remote_cnf, spec["port"], spec["extra"])
+        return data, "multi-db-tar", True
+    shell = spec["shell"]
+    enable = spec["enable"]
+
     wrapped = _wrap_login(shell)
+    p = transfer_params(task)
     try:
         from core.engines.file import _ssh_exec_pipe
-        out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=3600)
+        # 超时改为任务级（默认不限时长，只由空闲超时兜底），
+        # 避免 10GB 级备份被写死的 3600s 砍掉后从头重跑。
+        out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=p["cmd_timeout"])
         if rc != 0:
             raise RuntimeError(f"远程 mysqldump 失败(rc={rc}, bin={mysqldump_bin}): {err[:600]}")
         # 防御：mysqldump 异常时也可能产生极小的压缩产物
@@ -1232,7 +1311,9 @@ def _remote_mongodb_dump(task: dict, ssh_host: dict, compress: int) -> bytes:
                  f"rm -rf {work}; exit $RC")
         wrapped = _wrap_login(shell)
         from core.engines.file import _ssh_exec_pipe
-        out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=3600)
+        # 超时改为任务级（默认不限时长，只由空闲超时兜底），避免大库被 3600s 砍掉后重跑
+        out, err, rc = _ssh_exec_pipe(
+            client, wrapped, timeout=transfer_params(task)["cmd_timeout"])
         if rc != 0:
             raise RuntimeError(f"远程 mongodump(目录格式)失败(rc={rc}, bin={mongodump}): {err[:600]}")
         if len(out) <= 100:
@@ -1244,7 +1325,9 @@ def _remote_mongodb_dump(task: dict, ssh_host: dict, compress: int) -> bytes:
         shell = base_shell + " --archive --gzip"
         wrapped = _wrap_login(shell)
         from core.engines.file import _ssh_exec_pipe
-        out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=3600)
+        # 超时改为任务级（默认不限时长，只由空闲超时兜底），避免大库被 3600s 砍掉后重跑
+        out, err, rc = _ssh_exec_pipe(
+            client, wrapped, timeout=transfer_params(task)["cmd_timeout"])
         if rc != 0:
             raise RuntimeError(f"远程 mongodump 失败(rc={rc}, bin={mongodump}): {err[:600]}")
         if len(out) <= 20:
@@ -1301,6 +1384,413 @@ def remote_exec_and_fetch(ssh_host: dict, remote_cmd: str, remote_path: str,
                 client.close()
             except Exception:
                 pass
+
+
+# --------------------------------------------------------------------------- #
+# 远端落盘 + 断点续传（10GB 级备份能否跑完的关键）
+#
+# 背景：旧实现把 mysqldump 的 stdout 直接经 SSH 管道拉回平台内存。管道是流式
+# 的，**没有偏移量语义**——一旦超时/断链，只能从头重跑 dump。用户实测 10GB
+# 库在 600KB/s 链路上传了 1.4GB 后被 3600s 超时砍掉，重试又从 0 开始，永远跑不完。
+#
+# 现改为两段式：
+#   1) 远端后台导出（setsid nohup，SSH 断开也继续，不占平台带宽）
+#   2) 平台按 offset 增量拉取（边导出边传），中断后从已拉字节继续，**不重跑导出**
+# --------------------------------------------------------------------------- #
+
+_SFTP_READ_CHUNK = 4 * 1024 * 1024
+
+
+def _remote_stage_dir() -> str:
+    """远端暂存目录（关键点：不能装任何东西，只是临时落盘）。"""
+    return getattr(config, "BACKUP_REMOTE_STAGE", "/tmp/bk_stage")
+
+
+def _resume_part_path(final_path: str, task: dict, db_type: str) -> str:
+    """本地半成品路径：**与时间戳无关**，否则重试换了产物名就命中不了断点。"""
+    d = os.path.dirname(final_path) or "."
+    return os.path.join(d, f".resume_t{int(task.get('id') or 0)}_{db_type}.part")
+
+
+def _meta_read(part_path: str) -> dict:
+    try:
+        if not os.path.exists(part_path + ".meta"):
+            return {}
+        with open(part_path + ".meta", "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _meta_write(part_path: str, meta: dict) -> None:
+    try:
+        tmp = part_path + ".meta.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        os.replace(tmp, part_path + ".meta")
+    except Exception:
+        pass
+
+
+def _meta_drop(part_path: str) -> None:
+    for p in (part_path, part_path + ".meta", part_path + ".meta.tmp"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _meta_usable(meta: dict, ssh_host: dict, spec: dict, p: dict) -> bool:
+    """断点是否可续用：同一主机 + 压缩/格式参数一致 + 未过期。"""
+    if not meta.get("remote_path"):
+        return False
+    if (meta.get("host") or "") != (ssh_host.get("host") or ssh_host.get("ip") or ""):
+        return False
+    if bool(meta.get("compressed")) != bool(spec.get("enable")):
+        return False
+    if (meta.get("suffix") or "") != (spec.get("suffix") or ""):
+        return False
+    try:
+        age = time.time() - float(meta.get("started_at") or 0)
+    except (TypeError, ValueError):
+        age = 0
+    return age <= float(p.get("resume_ttl") or 43200)
+
+
+def _cleanup_remote(sftp, meta: dict) -> None:
+    """清理远端暂存产物（成功/断点作废时；best-effort，失败不影响主流程）。"""
+    for key in ("remote_path", "rc_path", "err_path", "sh_path"):
+        path = meta.get(key)
+        if not path:
+            continue
+        try:
+            sftp.remove(path)
+        except Exception:
+            pass
+
+
+def _remote_rc_ready(sftp, rc_path: str):
+    """远端导出是否结束：返回 (ready, rc)。rc!=0 表示导出失败。"""
+    try:
+        st = sftp.stat(rc_path)
+        if int(st.st_size or 0) <= 0:
+            return False, -1
+        with sftp.open(rc_path, "r") as f:
+            raw = f.read().decode("utf-8", "replace").strip()
+        if not raw:
+            return False, -1
+        return True, int(raw.splitlines()[-1])
+    except (IOError, OSError):
+        return False, -1
+    except Exception:
+        return False, -1
+
+
+def _sftp_read_tail(sftp, path: str, limit: int = 800) -> str:
+    try:
+        with sftp.open(path, "r") as f:
+            txt = f.read().decode("utf-8", "replace")
+        return txt[-limit:]
+    except Exception:
+        return ""
+
+
+def _start_remote_dump(client, sftp, spec: dict, stage: str, sh_path: str,
+                       remote_path: str, err_path: str, rc_path: str) -> None:
+    """在远端后台启动 dump（setsid 脱离 SSH 会话，平台断线也不中断导出）。"""
+    # 先确保暂存目录存在：SFTP 不会递归创建父目录，否则写脚本直接 ENOENT
+    try:
+        sftp.stat(stage)
+    except Exception:
+        try:
+            sftp.mkdir(stage)
+        except Exception:
+            pass
+    # exec 2> err：整条管道（含 mysqldump 自身）的 stderr 都要落文件。
+    # 之前把 2> 写在管道末尾只捕获了 zstd 的 stderr，导出失败时查不到原因。
+    script = (
+        "#!/bin/bash\n"
+        f"exec 2> {shlex.quote(err_path)}\n"
+        f"{spec['shell']} > {shlex.quote(remote_path)}\n"
+        f"RC=$?\n"
+        f"echo $RC > {shlex.quote(rc_path)}\n"
+        "exit $RC\n"
+    )
+    with sftp.open(sh_path, "wb") as rf:
+        rf.write(script.encode("utf-8"))
+    try:
+        sftp.chmod(sh_path, 0o700)
+    except Exception:
+        pass
+    from core.engines.file import _ssh_exec_pipe
+    start_cmd = _wrap_login(
+        f"mkdir -p {shlex.quote(stage)} && rm -f {shlex.quote(rc_path)} && "
+        f"setsid nohup bash -lc {shlex.quote(sh_path)} </dev/null >/dev/null 2>&1 & "
+        f"sleep 1; echo started")
+    _o, _e, _rc = _ssh_exec_pipe(client, start_cmd, timeout=60)
+    logging.getLogger(__name__).info(
+        "[remote_dump] 远端后台导出已启动: %s -> %s", sh_path, remote_path)
+
+
+def _sftp_pull_incremental(sftp, remote_path: str, rc_path: str, local_path: str,
+                           meta: dict, p: dict, label: str = "",
+                           rate_kbps: int = 0) -> int:
+    """按 offset 增量拉取远端文件：边导出边传，中断后从断点继续。
+
+    返回已拉取的总字节数（含断点前已有的部分）。
+    """
+    import time as _t
+    offset = int(meta.get("offset") or 0)
+    if os.path.exists(local_path):
+        try:
+            real = os.path.getsize(local_path)
+            if real < offset:
+                offset = real          # 本地半成品被截断过 → 以实际大小为准
+        except OSError:
+            offset = 0
+    else:
+        offset = 0
+
+    # 远端刚启动时产物文件可能还没创建 → 等它出现（最长等 60s，期间若已判失败则报错）
+    rf = None
+    _wait_start = _t.time()
+    while rf is None:
+        try:
+            rf = sftp.open(remote_path, "rb")
+            break
+        except (IOError, OSError):
+            _ready0, _rc0 = _remote_rc_ready(sftp, rc_path)
+            if _ready0:
+                raise RuntimeError(
+                    f"远端导出已结束(rc={_rc0})但产物文件不存在，无法续传")
+            if _t.time() - _wait_start > 60:
+                raise RuntimeError(
+                    f"等待远端产物生成超时（60s）：{remote_path}")
+            _t.sleep(0.5)
+    try:
+        # paramiko 默认单请求 32KB，大文件下请求往返成为瓶颈 → 调大到 512KB
+        try:
+            rf.MAX_REQUEST_SIZE = 512 * 1024
+        except Exception:
+            pass
+        base_offset = offset      # 限速预算起点（续传时已有进度不计入）
+        lf = open(local_path, "ab" if offset else "wb")
+        start = _t.time()
+        last_hb = start
+        hb_bytes = offset
+        idle_since = _t.time()
+        meta["offset"] = offset
+        _meta_write(local_path, meta)
+        try:
+            while True:
+                try:
+                    rsize = int(sftp.stat(remote_path).st_size)
+                except (IOError, OSError):
+                    rsize = 0
+                if rsize > offset:
+                    rf.seek(offset)
+                    while offset < rsize:
+                        chunk = rf.read(min(_SFTP_READ_CHUNK, rsize - offset))
+                        if not chunk:
+                            break
+                        lf.write(chunk)
+                        offset += len(chunk)
+                        idle_since = _t.time()
+                        # 平台侧限速（KB/s）：按"应耗时"补 sleep，不依赖远端 pv
+                        if rate_kbps > 0:
+                            _expect = (offset - base_offset) / (rate_kbps * 1024.0)
+                            _drift = _expect - (_t.time() - start)
+                            if _drift > 0.05:
+                                _t.sleep(min(_drift, 2.0))
+                        now = _t.time()
+                        if now - last_hb >= 30:
+                            spd = (offset - hb_bytes) / max(now - last_hb, 0.001) / (1024 * 1024)
+                            try:
+                                logging.getLogger(__name__).info(
+                                    "[remote_dump] 拉取进度%s: 已传 %s，速率 %.1f MB/s",
+                                    f"（{label}）" if label else "",
+                                    db.human_size(offset), spd)
+                                from core import oplog
+                                op = oplog.current()
+                                if op:
+                                    op.info("备份数据拉取进度: 已传 %s（速率 %.1f MB/s，耗时 %.0fs）%s",
+                                            db.human_size(offset), spd, now - start,
+                                            f"[{label}]" if label else "")
+                            except Exception:
+                                pass
+                            last_hb = now
+                            hb_bytes = offset
+                            lf.flush()
+                            meta["offset"] = offset
+                            _meta_write(local_path, meta)
+                    lf.flush()
+                    meta["offset"] = offset
+                    _meta_write(local_path, meta)
+                ready, rc = _remote_rc_ready(sftp, rc_path)
+                if ready:
+                    if rc != 0:
+                        break
+                    try:
+                        rsize2 = int(sftp.stat(remote_path).st_size)
+                    except (IOError, OSError):
+                        rsize2 = offset
+                    if offset >= rsize2:
+                        break
+                    continue
+                now = _t.time()
+                if p.get("cmd_timeout") and (now - start) > float(p["cmd_timeout"]):
+                    raise RuntimeError(
+                        f"备份传输超时（{p['cmd_timeout']}s，已传 {db.human_size(offset)}），"
+                        f"断点已保留，下一次执行自动续传")
+                if p.get("idle_timeout") and (now - idle_since) > float(p["idle_timeout"]):
+                    raise RuntimeError(
+                        f"远端导出空闲超时（{p['idle_timeout']}s 无新增数据，"
+                        f"已传 {db.human_size(offset)}）")
+                _t.sleep(0.5)
+        finally:
+            lf.close()
+            meta["offset"] = offset
+            _meta_write(local_path, meta)
+    finally:
+        try:
+            rf.close()
+        except Exception:
+            pass
+    return offset
+
+
+def _remote_mysql_dump_to_file(task: dict, ssh_host: dict, final_path: str,
+                               compress: int, extra_args: str = "",
+                               resume: bool = True) -> dict:
+    """远端 mysqldump → 远端暂存 → 平台 SFTP 增量续拉（断点续传）。
+
+    返回 dict(path, size, compressed, fmt, suffix, sha256, resumed)。
+    """
+    p = transfer_params(task)
+    resume = bool(resume and p.get("resume"))
+    client = _connect(ssh_host)
+    sftp = client.open_sftp()
+    cnf_local = tempfile.mktemp(suffix=".cnf")
+    user = task.get("username") or "root"
+    pw = db.decrypt_secret(task.get("password") or "")
+    with open(cnf_local, "wb") as f:
+        f.write(f"[client]\nuser={user}\npassword={pw}\n".encode("utf-8"))
+    remote_cnf = "/tmp/bk_rdump.cnf"
+    sftp.put(cnf_local, remote_cnf)
+    try:
+        sftp.chmod(remote_cnf, 0o600)
+    except Exception:
+        pass
+    os.remove(cnf_local)
+
+    part_path = _resume_part_path(final_path, task, "mysql")
+    meta = _meta_read(part_path) if resume else {}
+    resumed = False
+    try:
+        mysqldump_bin = _resolve_mysql_dump_bin(client, task, remote_cnf)
+        spec = _build_mysql_dump_shell(client, task, ssh_host, mysqldump_bin,
+                                       remote_cnf, compress, extra_args)
+        if spec["fmt"] == "multi-db-tar":
+            # 全实例：远端逐库 dump 后 tar.gz 拉回（产物本身是 tar 流，暂无续传形态）
+            data = _remote_mysql_full_instance_tar(
+                client, mysqldump_bin, remote_cnf, spec["port"], spec["extra"])
+            with open(final_path, "wb") as lf:
+                lf.write(data)
+            return {"path": final_path, "size": len(data), "compressed": True,
+                    "fmt": "multi-db-tar", "suffix": ".tar.gz",
+                    "sha256": db.sha256_file(final_path), "resumed": False}
+
+        stage = _remote_stage_dir()
+        if meta and _meta_usable(meta, ssh_host, spec, p):
+            resumed = True
+            logging.getLogger(__name__).info(
+                "[remote_dump] 命中断点续传: 远端 %s，本地已传 %s",
+                meta.get("remote_path"), db.human_size(int(meta.get("offset") or 0)))
+            try:
+                from core import oplog
+                op = oplog.current()
+                if op:
+                    op.info("命中断点续传：从 %s 处继续拉取（远端 %s）",
+                            db.human_size(int(meta.get("offset") or 0)),
+                            meta.get("remote_path"))
+            except Exception:
+                pass
+        else:
+            if meta:
+                _cleanup_remote(sftp, meta)     # 断点过期/参数变化 → 清旧残留
+            _meta_drop(part_path)
+            tag = f"t{int(task.get('id') or 0)}_{int(time.time())}"
+            meta = {
+                "task_id": int(task.get("id") or 0),
+                "host": ssh_host.get("host") or ssh_host.get("ip") or "",
+                "compressed": bool(spec["enable"]),
+                "suffix": spec["suffix"],
+                "remote_path": f"{stage}/bk_dump_{tag}.part",
+                "rc_path": f"{stage}/bk_dump_{tag}.rc",
+                "err_path": f"{stage}/bk_dump_{tag}.err",
+                "sh_path": f"{stage}/bk_dump_{tag}.sh",
+                "started_at": time.time(),
+                "offset": 0,
+            }
+            _start_remote_dump(client, sftp, spec, stage, meta["sh_path"],
+                               meta["remote_path"], meta["err_path"], meta["rc_path"])
+            _meta_write(part_path, meta)
+
+        _sftp_pull_incremental(sftp, meta["remote_path"], meta["rc_path"],
+                               part_path, meta, p,
+                               label=f"mysqldump{' 续传' if resumed else ''}",
+                               rate_kbps=int(p.get("rate_kbps") or 0))
+
+        ready, rc = _remote_rc_ready(sftp, meta["rc_path"])
+        if ready and rc != 0:
+            raise RuntimeError(
+                f"远程 mysqldump 失败(rc={rc}, bin={mysqldump_bin}): "
+                f"{_sftp_read_tail(sftp, meta['err_path'])}")
+        if not ready:
+            raise RuntimeError("远端导出未正常结束（无完成标记），断点已保留，重试将自动续传")
+        rsize = int(sftp.stat(meta["remote_path"]).st_size)
+        if spec["enable"] and rsize <= 20:
+            raise RuntimeError(
+                f"远程 mysqldump 疑似失败：压缩后仅 {rsize} 字节"
+                f"（stderr: {_sftp_read_tail(sftp, meta['err_path'], 200)}）")
+
+        os.replace(part_path, final_path)
+        _meta_drop(part_path)
+        _cleanup_remote(sftp, meta)
+        return {"path": final_path, "size": os.path.getsize(final_path),
+                "compressed": bool(spec["enable"]), "fmt": spec["fmt"],
+                "suffix": spec["suffix"], "sha256": db.sha256_file(final_path),
+                "resumed": resumed}
+    finally:
+        try:
+            sftp.remove(remote_cnf)
+        except Exception:
+            pass
+        try:
+            sftp.close()
+        except Exception:
+            pass
+
+
+def remote_db_dump_to_file(task: dict, ssh_host: dict, db_type: str, final_path: str,
+                           compress: int = 0, extra_args: str = "",
+                           resume: bool = True) -> dict:
+    """统一入口：把远端 dump **直接落盘**到 final_path（内存恒定，可断点续传）。
+
+    与旧 remote_db_dump 的差别：不再把整个产物（可能 10GB）攒在内存里再写盘。
+    目前 MySQL/MariaDB 走「远端落盘 + SFTP 增量续拉」的完整续传通道；其余类型
+    先落盘（已受益于 SSH 管道 O(n²) 拷贝修复），后续按同一模式接入。
+    """
+    if (db_type or "").lower() in ("mysql", "mariadb"):
+        return _remote_mysql_dump_to_file(task, ssh_host, final_path, compress,
+                                          extra_args, resume)
+    data, compressed, fmt = remote_db_dump(task, ssh_host, db_type, compress, extra_args)
+    os.makedirs(os.path.dirname(final_path) or ".", exist_ok=True)
+    with open(final_path, "wb") as f:
+        f.write(data)
+    return {"path": final_path, "size": len(data), "compressed": bool(compressed),
+            "fmt": fmt, "suffix": "", "sha256": db.sha256_file(final_path),
+            "resumed": False}
 
 
 def remote_db_dump(task: dict, ssh_host: dict, db_type: str, compress: int = 0,

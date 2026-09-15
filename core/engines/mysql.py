@@ -828,7 +828,14 @@ class MySQLEngine(BackupEngine):
 
     # ------------------ 逻辑备份 (mysqldump) ------------------
     def _backup_logical_remote(self, ssh_host: dict, backup_type: BackupType) -> BackupResult:
-        """在 SSH 备份机/数据库服务器上执行 mysqldump，把流拉回到本地落盘。"""
+        """在 SSH 备份机/数据库服务器上执行 mysqldump，产物落到平台存储。
+
+        两条通道：
+        1) **断点续传通道（默认）**：远端后台 dump 落盘 + 平台按 offset 增量拉取。
+           10GB 级库的唯一可行方案——中断后从已传字节继续、不重跑 dump，
+           且内存恒定（边收边写盘，不再把整个产物攒在内存里）。
+        2) 旧通道（高级选项关闭断点续传时）：stdout 直连拉回内存再写盘。
+        """
         from core import remote_dump
         # 与本地逻辑备份对齐：统一由全局 COMPRESS_BY_DEFAULT 控制，远端优先 zstd
         enable = getattr(config, "COMPRESS_BY_DEFAULT", True)
@@ -840,6 +847,45 @@ class MySQLEngine(BackupEngine):
             extra_args = ""
         else:
             extra_args = "--set-gtid-purged=OFF" if not extra.get("gtid_purged") else ""
+        # 产物后缀：先按"压缩可用"预期命名，落盘后按实际情况修正
+        from core import dump_format as _dfmt
+        _ext = (_dfmt.resolve(self.db_type, extra, compress=bool(comp)).get("ext") or ".sql")
+        guess = f"{_ext}.zst" if comp else _ext
+        p = remote_dump.transfer_params(self.task)
+
+        if p.get("resume"):
+            out_path = self._new_dump_path(backup_type, guess)
+            info = remote_dump.remote_db_dump_to_file(
+                self.task, ssh_host, "mysql", out_path, comp, extra_args)
+            actual = info.get("suffix") or guess
+            final_path = info["path"]
+            if actual != guess and final_path.endswith(guess):
+                new_path = final_path[: -len(guess)] + actual
+                try:
+                    os.replace(final_path, new_path)
+                    final_path = new_path
+                except OSError:
+                    pass
+            hk = (ssh_host or {}).get("host_key", "remote")
+            size = int(info.get("size") or 0)
+            resumed = bool(info.get("resumed"))
+            self.logger.info(
+                "[%s] MySQL 逻辑备份完成: %s（%s%s）", self.task_name, final_path,
+                db.human_size(size), "，断点续传" if resumed else "")
+            res = BackupResult(
+                success=True, status=BackupStatus.SUCCESS, backup_path=final_path,
+                size_bytes=size, duration_sec=0.0, checksum=info.get("sha256") or "",
+                message=(f"通过 SSH 在数据库服务器({hk})执行 mysqldump 成功 | "
+                         f"{db.human_size(size)}"
+                         + ("（断点续传完成）" if resumed else "")))
+            if info.get("fmt") == "multi-db-tar":
+                res.compress_algo = "gzip"
+            else:
+                res.compress_algo = "zstd" if info.get("compressed") else "none"
+                if not info.get("compressed") and enable:
+                    res.message = (res.message or "") + "（远端未安装 zstd，已降级为不压缩）"
+            return res
+
         data, compressed, fmt = remote_dump.remote_db_dump(self.task, ssh_host, "mysql", comp, extra_args)
         if fmt == "multi-db-tar":
             # 全实例：逐库 .sql → tar.gz（远端已 gzip，manifest.json 标注库清单）

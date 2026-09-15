@@ -837,15 +837,18 @@ class BackupEngine:
             tar.extractall(dest_dir)
         return dest_dir
 
-    def _write_dump_file(self, data: bytes, backup_type: BackupType,
-                          ssh_host: dict, ext: str, label: str) -> BackupResult:
-        """将远程 dump 返回的字节流落盘，并返回 SUCCESS 结果。"""
+    def _new_dump_path(self, backup_type: BackupType, ext: str) -> str:
+        """生成产物落盘路径（与 _write_dump_file 命名规则一致，供流式落盘复用）。"""
         out_dir = self._output_dir()
         os.makedirs(out_dir, exist_ok=True)
         ts = self._timestamp()
         bt = backup_type.value if isinstance(backup_type, BackupType) else str(backup_type)
-        fname = f"{ts}__{self.task_name}__{bt}{ext}"
-        out_path = os.path.join(out_dir, fname)
+        return os.path.join(out_dir, f"{ts}__{self.task_name}__{bt}{ext}")
+
+    def _write_dump_file(self, data: bytes, backup_type: BackupType,
+                          ssh_host: dict, ext: str, label: str) -> BackupResult:
+        """将远程 dump 返回的字节流落盘，并返回 SUCCESS 结果。"""
+        out_path = self._new_dump_path(backup_type, ext)
         with open(out_path, "wb") as af:
             af.write(data)
         size = os.path.getsize(out_path)
@@ -874,8 +877,16 @@ class BackupEngine:
         if ssh_host:
             hk = ssh_host.get("host_key", "unknown")
             self.logger.info("[%s] %s: 优先尝试远程主机 %s", self.task_name, label, hk)
-            max_retries = getattr(config, "BACKUP_RETRY_MAX", 3)
-            base_delay = getattr(config, "BACKUP_RETRY_DELAY", 5)
+            # 重试次数/间隔走任务级高级选项（默认 3 次 / 间隔 60s）；
+            # 大库备份失败后立刻重试没有意义，给链路与远端留出恢复时间。
+            try:
+                from core import remote_dump as _rd
+                _tp = _rd.transfer_params(self.task)
+                max_retries = int(_tp.get("retry_max") or 0)
+                retry_interval = int(_tp.get("retry_interval") or 60)
+            except Exception:
+                max_retries = getattr(config, "BACKUP_RETRY_MAX", 3)
+                retry_interval = getattr(config, "BACKUP_RETRY_INTERVAL", 60)
             for attempt in range(max_retries + 1):
                 try:
                     result = remote_fn(ssh_host)
@@ -887,9 +898,11 @@ class BackupEngine:
                 except Exception as e:
                     remote_error = str(e)
                     if attempt < max_retries and _is_network_error(e):
-                        wait = base_delay * (2 ** attempt)
+                        # 固定间隔重试（任务级，默认 60s）。大库备份的断点会被保留，
+                        # 重试时从已传输字节继续，不会像以前那样从头重跑。
+                        wait = retry_interval
                         self.logger.warning(
-                            "[%s] %s 远程执行网络错误，%s 后第 %d/%d 次重试: %s",
+                            "[%s] %s 远程执行网络错误，%ss 后第 %d/%d 次重试: %s",
                             self.task_name, label, wait, attempt + 1, max_retries, remote_error)
                         time.sleep(wait)
                         continue

@@ -1104,6 +1104,27 @@
         .filter(s => s && !s.startsWith("#") && s.includes("="));
       if (envLines.length) eo.env_vars = envLines.join("\n");
       else delete eo.env_vars;
+      // 大流量传输参数（大库备份的可完成性：超时 / 重试 / 断点续传）
+      const _numOr = (id, fallback) => {
+        const el = $(id);
+        if (!el) return fallback;
+        const v = Number(el.value);
+        return Number.isFinite(v) ? v : fallback;
+      };
+      const cmdTimeout = _numOr("t_cmd_timeout", 0);
+      if (cmdTimeout > 0) eo.cmd_timeout = cmdTimeout; else delete eo.cmd_timeout;
+      const idleTimeout = _numOr("t_idle_timeout", 0);
+      if (idleTimeout > 0) eo.idle_timeout = idleTimeout; else delete eo.idle_timeout;
+      const retryInterval = _numOr("t_retry_interval", 60);
+      if (Number.isFinite(retryInterval) && retryInterval >= 0) eo.retry_interval = retryInterval;
+      else delete eo.retry_interval;
+      const retryMax = _numOr("t_retry_max", 3);
+      if (Number.isFinite(retryMax) && retryMax >= 0) eo.retry_max = retryMax;
+      else delete eo.retry_max;
+      if ($("t_resume_enabled")) {
+        if ($("t_resume_enabled").checked) delete eo.resume_enabled;
+        else eo.resume_enabled = false;
+      }
       const data = {
         name: val("t_name"),
         biz_system: val("t_biz_system").trim(),
