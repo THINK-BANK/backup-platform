@@ -480,7 +480,12 @@ docker build -t backup-platform:local .
   - **空闲超时默认 1800s**：连续这么久没有任何数据才判失败，区分"大表读得慢"与"真卡死"。
   - **失败重试间隔默认 60s**、重试次数默认 3（旧版 5s 指数退避，且重试＝从头重跑）。
   - 全局默认可用环境变量覆盖：`BACKUP_CMD_TIMEOUT` / `BACKUP_IDLE_TIMEOUT` / `BACKUP_RETRY_INTERVAL` / `BACKUP_RESUME_ENABLED` / `BACKUP_RESUME_TTL` / `BACKUP_REMOTE_STAGE`。
+- **断点续传扩展到全部产物形态（固定产物）**：物理备份 tar / Oracle Data Pump `.dmp` / SQL Server `.bak` / 达梦备份集 / 自定义脚本产物，此前因"不产生 rc 标记文件"而未接入，现按同一模式打通：
+  - **结束判定差异**：逻辑备份有 rc 标记；固定产物改用**「远端文件连续 N 秒不再增长」**判定写盘结束（`BACKUP_STABLE_SECS`）。
+  - **不重跑昂贵备份**：远端路径改为**确定性**（按任务固定）+ `.bkdone` 完成标记 → 拉回中断后重试**跳过备份执行**（xtrabackup / pg_basebackup / RMAN 可能跑数小时）直接从断点续传；成功拉回后仍照原规则清理，数据库服务器**零残留**。
+  - 覆盖：MySQL/MariaDB 物理（xtrabackup / mariabackup）、PG 系与金仓 `*_basebackup`、Oracle RMAN 备份片与 expdp、SQL Server FULL/DIFF/LOG、达梦联机/dmrman、自定义脚本产物（详见 `readme_20260915.md` §3.4）。
 - **可观测性**：SSH 传输与 SFTP 拉取每 30s 输出进度（已传大小 + 速率 MB/s）到操作日志，大库备份不再"黑屏干等"。
+- **修复**：`_sftp_pull_incremental` 中 `has_rc` / `stable_secs` 两个变量未定义（上一轮中断留下的半成品，必然 `NameError`），随本次续传改造一并补齐并参数化。
 - **修复**：`remote_has_tool` 另起 SSH 连接失败时会被误判成"没装 zstd"→ 改用当前连接 `command -v zstd` 探测，避免大库备份白白丢掉压缩。
 
 > 本次更新的完整说明（含 O(n²) 根因分析、逐项实测数据、任务级参数表与已知边界）见 [readme_20260915.md](readme_20260915.md)。
