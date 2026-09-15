@@ -1403,15 +1403,46 @@ def start_scheduler():
     return _scheduler
 
 
+# reload 并发保护：批量建任务/批量删除时，每个请求都会触发一次 reload。
+# 原始实现「遍历 job 快照 → 逐个 remove」在并发下必然撞车（另一线程已删掉同一 job
+# → JobLookupError → HTTP 500）。这里用「序号 + 执行锁」做请求合并：真正执行一次
+# 全量重建即可满足排队中的其它请求，既消除竞态，又避免 N 次全量重建的开销。
+_reload_lock = threading.Lock()
+_reload_exec_lock = threading.Lock()
+_reload_seq = 0
+_reload_done = 0
+
+
 def reload_scheduler():
-    global _scheduler
+    global _scheduler, _reload_seq, _reload_done
     if _scheduler is None:
         return start_scheduler()
+    with _reload_lock:
+        _reload_seq += 1
+        mine = _reload_seq
+    with _reload_exec_lock:
+        with _reload_lock:
+            if mine <= _reload_done:
+                return _scheduler   # 排队期间已被他人重建，且那次重建已覆盖我的变更
+            seq_at_start = _reload_seq
+        try:
+            _reload_scheduler_locked()
+        finally:
+            with _reload_lock:
+                _reload_done = max(_reload_done, seq_at_start)
+        return _scheduler
+
+
+def _reload_scheduler_locked():
+    global _scheduler
     for j in list(_scheduler.get_jobs()):
         # 不重启 Supervisor：保留其主循环 tick job，仅重载常规与 3 个 RT 周期任务
         if j.id == _RT_SUPERVISOR_TICK_ID:
             continue
-        _scheduler.remove_job(j.id)
+        try:
+            _scheduler.remove_job(j.id)
+        except Exception:
+            pass  # 并发下可能已被其它 reload 删除，忽略即可
     for task in models.list_tasks(enabled=True):
         _register(_scheduler, task)
     for st in models.list_sync_tasks(enabled=True):

@@ -98,7 +98,11 @@ def list_records():
     task_id = request.args.get("task_id", type=int)
     policy_id = request.args.get("policy_id", type=int)
     keyword = request.args.get("keyword", type=str)
-    rows = models.list_records(task_id=task_id, keyword=keyword, policy_id=policy_id, limit=500)
+    # 支持 limit 分页（上限 500，避免一次性拉全表拖垮平台与浏览器）
+    limit = request.args.get("limit", type=int) or 500
+    limit = max(1, min(int(limit), 500))
+    rows = models.list_records(task_id=task_id, keyword=keyword, policy_id=policy_id,
+                               limit=limit)
     for r in rows:
         r["size_human"] = db.human_size(r.get("size_bytes") or 0)
     return jsonify(rows)

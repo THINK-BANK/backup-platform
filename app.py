@@ -342,6 +342,12 @@ def create_app() -> Flask:
         """恢复校验策略与恢复测试报告。"""
         return render_template("restore_verify.html", page="restore-verify")
 
+    @app.route("/cdc")
+    @login_required
+    def cdc_page():
+        """CDC 实时备份：行级变更捕获 + 任意时间点回滚/重放（持续数据保护）。"""
+        return render_template("cdc.html", page="cdc")
+
     @app.route("/data-compare")
     @login_required
     def data_compare_page():

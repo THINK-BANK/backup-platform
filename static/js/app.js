@@ -457,6 +457,10 @@
         if ($("t_custom_restore")) $("t_custom_restore").value = eo.custom_restore_script || "";
         if ($("t_custom_artifact_dir")) $("t_custom_artifact_dir").value = eo.custom_artifact_dir || "";
         if ($("t_custom_timeout")) $("t_custom_timeout").value = eo.custom_timeout || "";
+        // 自定义备份范围（全库/单表/全实例）与表名
+        if ($("t_custom_scope")) $("t_custom_scope").value = eo.custom_scope || "full_database";
+        if ($("t_custom_tables")) $("t_custom_tables").value = eo.custom_tables || "";
+        if (window.toggleCustomTables) window.toggleCustomTables();
         // 任务级环境变量回填（支持 dict 或字符串两种存储形态）
         if ($("t_env_vars")) {
           const ev = eo.env_vars;
@@ -483,6 +487,9 @@
       if ($("t_custom_restore")) $("t_custom_restore").value = "";
       if ($("t_custom_artifact_dir")) $("t_custom_artifact_dir").value = "";
       if ($("t_custom_timeout")) $("t_custom_timeout").value = "";
+      if ($("t_custom_scope")) $("t_custom_scope").value = "full_database";
+      if ($("t_custom_tables")) $("t_custom_tables").value = "";
+      if (window.toggleCustomTables) window.toggleCustomTables();
       if ($("t_env_vars")) $("t_env_vars").value = "";
       resetSshCred();
     }
@@ -855,6 +862,76 @@
   }
   window.toggleCustomBox = toggleCustomBox;
 
+  // ---- 自定义备份：范围（全库 / 单表 / 全实例）与表名 ----
+  function toggleCustomTables() {
+    const scopeEl = $("t_custom_scope");
+    const wrap = $("t_custom_tables_wrap");
+    if (scopeEl && wrap) {
+      wrap.style.display = scopeEl.value === "single_table" ? "" : "none";
+    }
+  }
+  window.toggleCustomTables = toggleCustomTables;
+
+  // 按「数据库类型 + 范围」拉取脚本模板并填充到脚本框
+  async function fillCustomTemplate() {
+    const dbType = ($("t_db_type") && $("t_db_type").value) || "mysql";
+    const scope = ($("t_custom_scope") && $("t_custom_scope").value) || "full_database";
+    const hasScript = ($("t_custom_script") && $("t_custom_script").value.trim()) || "";
+    if (hasScript && !window.confirm("将用模板覆盖当前脚本内容，是否继续？")) return;
+    try {
+      const r = await fetch(`/api/custom-script/template?db_type=${encodeURIComponent(dbType)}&scope=${encodeURIComponent(scope)}`);
+      const t = await r.json();
+      if (t.error) { toast(t.error, "danger"); return; }
+      if ($("t_custom_script")) $("t_custom_script").value = t.backup || "";
+      if ($("t_custom_restore")) $("t_custom_restore").value = t.restore || "";
+      toast("已填充脚本模板（" + (t.scope_label || scope) + "），请按需微调");
+    } catch (e) {
+      toast("模板获取失败: " + e.message, "danger");
+    }
+  }
+  window.fillCustomTemplate = fillCustomTemplate;
+
+  // 单表备份：从库中挑选表名（需任务已保存，列表接口按 task_id 拉）
+  async function openTablePicker() {
+    const id = ($("t_id") && $("t_id").value) || "";
+    if (!id) { toast("请先保存任务，再从库中选择表", "danger"); return; }
+    const modalEl = $("tablePickModal");
+    bootstrap.Modal.getOrCreateInstance(modalEl).show();
+    const hint = $("tblPickHint"), list = $("tblPickList");
+    hint.textContent = "加载中…"; list.innerHTML = "";
+    try {
+      const r = await fetch(`/api/tasks/${id}/list-tables`);
+      const d = await r.json();
+      if (d.error) { hint.innerHTML = '<span class="text-danger">' + esc(d.error) + "</span>"; return; }
+      const tables = d.tables || [];
+      if (!tables.length) { hint.textContent = "未获取到表（可直接手工填写表名）"; return; }
+      hint.textContent = `共 ${tables.length} 张表（库: ${esc(d.db || "-")}）`;
+      const selected = (($("t_custom_tables") && $("t_custom_tables").value) || "")
+        .split(",").map((s) => s.trim()).filter(Boolean);
+      list.innerHTML = tables.map((t) => `<div class="form-check">
+          <input class="form-check-input tbl-pick" type="checkbox" value="${esc(t)}" id="tp_${esc(t)}"
+            ${selected.includes(t) ? "checked" : ""}>
+          <label class="form-check-label" for="tp_${esc(t)}">${esc(t)}</label></div>`).join("");
+    } catch (e) {
+      hint.innerHTML = '<span class="text-danger">加载失败: ' + esc(e.message) + "</span>";
+    }
+  }
+  window.openTablePicker = openTablePicker;
+
+  document.addEventListener("DOMContentLoaded", () => {
+    const fillBtn = $("btnFillTpl");
+    if (fillBtn) fillBtn.onclick = fillCustomTemplate;
+    const pickBtn = $("btnPickTables");
+    if (pickBtn) pickBtn.onclick = openTablePicker;
+    const okBtn = $("btnTblPickOk");
+    if (okBtn) okBtn.onclick = () => {
+      const vals = Array.from(document.querySelectorAll(".tbl-pick:checked")).map((c) => c.value);
+      if ($("t_custom_tables")) $("t_custom_tables").value = vals.join(",");
+      bootstrap.Modal.getInstance($("tablePickModal")).hide();
+    };
+    if ($("t_custom_scope")) toggleCustomTables();
+  });
+
   // ===================================================================
   // 任务级 SSH 执行通道（免纳管）：凭据写入 extra_options.ssh_cred
   // ===================================================================
@@ -994,6 +1071,16 @@
       }
       if (customScript.trim()) {
         eo.custom_script = customScript;
+        // 备份范围与表名（全库 / 单表 / 全实例）
+        const scope = ($("t_custom_scope") && $("t_custom_scope").value) || "full_database";
+        const tables = (($("t_custom_tables") && $("t_custom_tables").value) || "").trim();
+        eo.custom_scope = scope;
+        if (scope === "single_table") {
+          if (!tables) { toast("自定义备份范围为单表/多表时，请填写表名", "danger"); return; }
+          eo.custom_tables = tables;
+        } else {
+          delete eo.custom_tables;
+        }
         if ($("t_custom_restore") && $("t_custom_restore").value.trim())
           eo.custom_restore_script = $("t_custom_restore").value;
         else delete eo.custom_restore_script;
@@ -1008,6 +1095,8 @@
         delete eo.custom_restore_script;
         delete eo.custom_artifact_dir;
         delete eo.custom_timeout;
+        delete eo.custom_scope;
+        delete eo.custom_tables;
       }
       // 任务级环境变量（所有数据库类型通用；KEY=VALUE 每行一条）
       const envRaw = ($("t_env_vars") && $("t_env_vars").value) || "";

@@ -126,6 +126,69 @@ def list_task_databases(task_id):
     })
 
 
+@api_bp.route("/custom-script/template", methods=["GET"])
+@login_required
+def custom_script_template():
+    """按数据库类型 + 备份范围返回自定义备份/恢复脚本模板。
+
+    query: db_type（mysql/postgresql/oracle/dameng/sqlserver/mongodb/...）、
+           scope（full_instance | full_database | single_table）
+    返回的脚本可直接执行，界面一键填充后按需微调即可（全库/单表均支持）。
+    """
+    from core import custom_scripts
+    db_type = (request.args.get("db_type") or "mysql").strip()
+    scope = (request.args.get("scope") or custom_scripts.SCOPE_DATABASE).strip()
+    tpl = custom_scripts.template(db_type, scope)
+    tpl["scopes"] = [{"value": s, "label": custom_scripts.SCOPE_LABELS[s]}
+                     for s in custom_scripts.SCOPES]
+    return jsonify(tpl)
+
+
+@api_bp.route("/tasks/<int:task_id>/list-tables", methods=["GET"])
+@login_required
+def list_task_tables(task_id):
+    """列出任务库中的基础表（供「自定义备份 → 单表/多表」勾选表名）。
+
+    直连优先（core/native_conn），失败回退 JDBC（core/data_compare 的表清单逻辑）。
+    """
+    task = models.get_task(task_id, include_secret=True)
+    if not task:
+        return jsonify({"error": "任务不存在"}), 404
+    db_type = (task.get("db_type") or "").lower()
+    database = request.args.get("db") or task.get("db_name") or ""
+    schema = request.args.get("schema") or ""
+    conn = None
+    err = ""
+    try:
+        from core import native_conn
+        conn = native_conn.connect(
+            db_type, task.get("host"), task.get("port"), database,
+            task.get("username"), db.decrypt_secret(task.get("password") or ""))
+    except Exception as e:
+        err = str(e)
+    if conn is None:
+        try:
+            from core import jdbc
+            conn = jdbc.connect(
+                db_type, task.get("host"), task.get("port"), database,
+                task.get("username"), db.decrypt_secret(task.get("password") or ""))
+        except Exception as e:
+            # 连不上/库不存在属于"任务配置或目标环境问题"，不是服务端异常：
+            # 返回 400（带 error 与空表清单）而非 500，前端可提示用户、压测不会误判 5xx
+            return jsonify({"error": f"连接失败: {err or e}", "tables": []}), 400
+    try:
+        from core.data_compare import _list_tables
+        tables = _list_tables(conn, db_type, database, schema)
+    except Exception as e:
+        return jsonify({"error": f"拉取表清单失败: {e}", "tables": []}), 400
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return jsonify({"tables": tables, "db": database, "count": len(tables)})
+
+
 @api_bp.route("/tasks", methods=["GET"])
 @login_required
 def list_tasks():

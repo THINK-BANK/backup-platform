@@ -14,7 +14,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 **备份 · 恢复 · PITR · 数据迁移 · 数据同步 · 数据对比 · 预校验 · 克隆 · 演练 · 巡检 · AI 告警**
 
-[![Version](https://img.shields.io/badge/Version-v1.4.5-0D9488)](#更新日志)
+[![Version](https://img.shields.io/badge/Version-v1.4.6-0D9488)](#更新日志)
 [![License](https://img.shields.io/badge/License-MIT-green)](#许可证)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED)](#docker-部署含离线运行)
@@ -321,7 +321,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" \
 
 ```bash
 docker pull ghcr.io/zhh9126/backup-platform:latest
-docker pull ghcr.io/zhh9126/backup-platform:v1.4.5   # 固定版本（可回滚）
+docker pull ghcr.io/zhh9126/backup-platform:v1.4.6   # 固定版本（可回滚）
 ```
 
 > v1.4.4 起镜像已内置全部运行依赖与备份工具（Python 原生驱动 / JDBC+JRE / xtrabackup / mariabackup 等），`docker run` 开箱即用，无需再外部挂载任何工具目录。
@@ -345,7 +345,7 @@ python tools/check_env.py
 
 ```bash
 # 有网机器导出
-docker save ghcr.io/zhh9126/backup-platform:v1.4.5 -o backup-platform.tar
+docker save ghcr.io/zhh9126/backup-platform:v1.4.6 -o backup-platform.tar
 # 内网机器导入
 docker load -i backup-platform.tar
 ```
@@ -466,6 +466,20 @@ docker build -t backup-platform:local .
 - 默认账号请立即修改（首登会标记 `must_change_password`）；生产环境建议限制来源 IP
 
 ## 更新日志
+
+### v1.4.6（2026-09-15）
+
+- **全面压力测试与高并发加固（本次重点）**：新增 `scripts/stress_test_full.py` 一键全链路压测（6 阶段：批量建任务 → 批量触发备份 → 落库对账 → 全接口压测 → 数据返回校验 → 混合读写 + 写接口并发，结果可落盘 JSON）。**1200 个备份任务 / 并发 150 实测：全程 0 个 5xx、0 条平台 ERROR 日志、无 SQLite "database is locked"、无请求超时**（详见 `docs/stress_test_report_20260915.md`）。
+  - 压测数据：批量建任务 QPS 159.5 / P95 1298ms；批量触发备份 1200 次全部 success；全接口（自动发现 112 个 GET）× 5 轮 QPS 81.8、P95 1271ms；混合读写 30s、2637 次请求 QPS 84.2；写接口并发 QPS 208.4；数据返回校验 18/18 通过；平台 RSS 峰值 360MB、线程峰值 172。
+  - 落库对账（B2 阶段）：每条触发都留记录，success 记录 `size_bytes > 0`、`sha256` 齐全、产物文件真实存在，杜绝"假成功"。
+- **修复压测暴露的 5 个并发缺陷**：
+  1. **调度器 reload 并发竞态（最严重）**：`reload_scheduler()` 遍历 job 快照后逐个 `remove_job()`，并发建/删任务必抛 `JobLookupError` → **HTTP 500**（60 并发即触发 11 次）。改为「序号 + 执行锁」**请求合并**（并发 N 次 reload 只真正重建 1~2 次）并对 `remove_job` 容错。
+  2. **内置 Web 服务未开多线程**：`app.run` 缺 `threaded`，批量提交排队超时。新增 `config.WEB_THREADED`（默认开，环境变量 `WEB_THREADED=0` 可关）。
+  3. **SQLite 无 busy 超时**：并发写元库风险。`get_conn()` 增加 `timeout=30` + `PRAGMA busy_timeout=30000` + `synchronous=NORMAL`。
+  4. `GET /api/tasks/{id}/list-tables` 目标库连不上时返回 500 → 改为 **400 + error 文案**（属配置/环境问题，不再误报为服务端异常）。
+  5. `GET /api/records` 不支持分页（固定 500 条）→ 支持 `limit`（上限 500 保护）。
+- **性能调优结论**：备份执行吞吐约 13~15 个/秒，瓶颈是单次备份固定开销（元库写锁 / 日志 / 产物复制与 sha256），**非并发度**（`max_concurrent_backups` 2→16 后 QPS 仍 14.5，无提升），生产建议 `gunicorn -w 4 --threads 8` 承载。
+- **全类型自定义备份/恢复脚本 + 行级 CDC**（详见 `docs/custom_backup_guide.md`）：任务 `backup_mode=custom` 可自定义脚本（经 SSH/SFTP 在数据库服务器执行，产物拉回并计算真实 size/sha256），统一入口 `base.py run_backup()/run_restore()`；新增行级变更数据捕获（`core/cdc/rowlevel.py`、`api/cdc.py`）与对应页面/单测 `tests/test_custom_backup.py`。
 
 ### v1.4.5（2026-09-12）
 

@@ -528,6 +528,52 @@ CREATE TABLE IF NOT EXISTS db_migration_plans (
     finished_at    TEXT
 );
 
+-- 行级 CDC 捕获流（Debezium/Canal 对标：行级变更捕获底座）
+-- 用途：① CDC 实时备份（CDP，任意时间点回滚/重放）② 增量迁移 ③ 实时同步
+CREATE TABLE IF NOT EXISTS cdc_streams (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    db_type        TEXT NOT NULL,               -- mysql | mariadb | postgresql
+    host           TEXT NOT NULL,
+    port           INTEGER,
+    username       TEXT,
+    password       TEXT,                        -- 加密存储
+    db_name        TEXT,
+    purpose        TEXT DEFAULT 'cdp',          -- cdp(实时备份) | migration(增量迁移) | sync(实时同步)
+    ref_id         INTEGER,                     -- 关联 id（迁移计划 id / 同步任务 id / 备份任务 id）
+    include_tables TEXT,                        -- 只包含（逗号分隔，空=全部）
+    exclude_tables TEXT,                        -- 排除（逗号分隔）
+    position_json  TEXT,                        -- 续传位点 {"file","pos"} / {"lsn"}
+    status         TEXT DEFAULT 'stopped',      -- stopped | running | error
+    pid            INTEGER,
+    events_total   INTEGER DEFAULT 0,
+    last_event_at  TEXT,
+    last_error     TEXT,
+    created_at     TEXT,
+    updated_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cdc_streams_status ON cdc_streams(status);
+
+-- 行级变更事件（前后镜像 + 主键 + 位点）
+CREATE TABLE IF NOT EXISTS cdc_events (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    stream_id      INTEGER NOT NULL,
+    op             TEXT,                        -- INSERT | UPDATE | DELETE | DDL
+    schema_name    TEXT,
+    table_name     TEXT,
+    event_time     TEXT,                        -- 源端事务时间
+    position       TEXT,                        -- binlog file:pos / LSN / SCN
+    pk_json        TEXT,                        -- 主键值
+    before_json    TEXT,                        -- 前镜像
+    after_json     TEXT,                        -- 后镜像
+    before_partial INTEGER DEFAULT 0,           -- 前镜像不完整（如 PG 未开 REPLICA IDENTITY FULL）
+    sql_text       TEXT,                        -- LogMiner 等 SQL 级事件的原语句
+    applied        INTEGER DEFAULT 0,           -- 增量同步/迁移是否已投递到目标
+    created_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cdc_events_stream ON cdc_events(stream_id, id);
+CREATE INDEX IF NOT EXISTS idx_cdc_events_time   ON cdc_events(stream_id, event_time);
+
 -- 外部 API 调用令牌（Bearer Token，哈希存储，支持吊销）
 CREATE TABLE IF NOT EXISTS api_tokens (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -731,9 +777,13 @@ CREATE INDEX IF NOT EXISTS idx_db_adapters_enabled ON db_adapters(enabled, db_ty
 
 # ------------------------- 连接与执行 -------------------------
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.META_DB_PATH, check_same_thread=False)
+    # timeout/busy_timeout：多线程（Web 请求 + 调度器 + 备份线程）并发写 SQLite 时
+    # 不会立刻抛 "database is locked"，而是等待锁释放（批量任务压测必需）。
+    conn = sqlite3.connect(config.META_DB_PATH, timeout=30.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=30000;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
@@ -951,6 +1001,31 @@ def init_schema() -> None:
                     conn.execute(f"ALTER TABLE recovery_journal ADD COLUMN {col} {typedef}")
                 except Exception:
                     pass  # 列已存在或表刚建好，忽略
+
+            # 迁移：一站式迁移计划 —— 增量追平（DTS 不停机迁移：全量 → 增量 → 切换）
+            for col, typedef in [
+                ("inc_enabled", "INTEGER DEFAULT 0"),      # 是否启用增量追平
+                ("cdc_stream_id", "INTEGER"),              # 关联的 CDC 捕获流
+                ("full_done_at", "TEXT"),                  # 全量迁移完成时刻（增量起点）
+                ("inc_events", "INTEGER DEFAULT 0"),       # 已追平的增量事件数
+                ("inc_last_apply_at", "TEXT"),             # 最近一次增量投递时刻
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE db_migration_plans ADD COLUMN {col} {typedef}")
+                except Exception:
+                    pass  # 列已存在，忽略
+
+            # 迁移：同步任务 —— 实时同步接入行级 CDC
+            for col, typedef in [
+                ("cdc_stream_id", "INTEGER"),
+                ("cdc_lag_sec", "INTEGER DEFAULT 0"),
+                ("cdc_last_apply_at", "TEXT"),
+                ("conflict_policy", "TEXT DEFAULT 'overwrite'"),  # overwrite | skip | error
+            ]:
+                try:
+                    conn.execute(f"ALTER TABLE sync_tasks ADD COLUMN {col} {typedef}")
+                except Exception:
+                    pass  # 列已存在，忽略
 
             # 迁移：AI 预测透明化 —— alert_predictions 追加人类可读预测内容与依据
             for col, typedef in [

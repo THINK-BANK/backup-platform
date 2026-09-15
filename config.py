@@ -29,6 +29,10 @@ LOG_DIR = Path(os.environ.get("LOG_DIR", str(BASE_DIR / "logs")))
 # ---------- Web ----------
 WEB_HOST = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("WEB_PORT", "8080"))
+# 内置 Web 服务器是否多线程（默认开启）。
+# 单线程模式下批量操作（数百并发的批量建任务/批量触发备份）会排队超时，
+# 因此默认启用多线程；生产环境建议仍用 gunicorn -w 4 --threads 8 承载。
+WEB_THREADED = os.environ.get("WEB_THREADED", "1") != "0"
 
 
 def _load_or_create_secret_key() -> str:

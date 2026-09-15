@@ -50,7 +50,9 @@ def main():
     if not _locs.get("writable"):
         db.add_log("WARNING", "system",
                    f"日志目录不可写，已降级到 {_locs['log_dir']}，请配置持久化目录 LOG_DIR")
-    app.run(host=config.WEB_HOST, port=config.WEB_PORT, debug=False)
+    # threaded：内置服务器必须多线程，否则批量任务提交/批量触发备份时请求排队超时。
+    app.run(host=config.WEB_HOST, port=config.WEB_PORT, debug=False,
+            threaded=config.WEB_THREADED)
 
 
 if __name__ == "__main__":

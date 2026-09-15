@@ -31,6 +31,46 @@ def shlex_quote(s: str) -> str:
     return shlex.quote(str(s))
 
 
+def _is_local_task(task: dict) -> bool:
+    """判断任务的数据库是否就在平台本机（自定义脚本可走本地执行通道）。
+
+    远端数据库一律走 SSH；仅当任务地址就是本机自身时，允许在平台本机
+    bash 执行用户脚本（无需纳管 SSH 主机，便于平台同机部署场景）。
+    """
+    host = str(task.get("host") or "").strip()
+    if not host:
+        return False
+    if host.lower() in ("127.0.0.1", "localhost", "::1", "0.0.0.0", ""):
+        return True
+    try:
+        import socket
+        addrs = {socket.gethostname()}
+        try:
+            addrs |= set(socket.gethostbyname_ex(socket.gethostname())[2])
+        except Exception:
+            pass
+        if host in addrs:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _local_bash(script_path: str, env: dict, timeout: int):
+    """在本机 bash 执行脚本，返回 (rc, out, err, duration)。"""
+    import time as _time
+    start = _time.time()
+    try:
+        proc = subprocess.run(["bash", script_path], env=env, timeout=timeout,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        rc, out, err = proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired as e:
+        rc, out, err = 124, _decode_maybe(getattr(e, "stdout", b"")).encode(), \
+            f"脚本执行超时（{timeout}s）".encode()
+    duration = round(_time.time() - start, 3)
+    return rc, out, err, duration
+
+
 def _decode_maybe(data) -> str:
     """把 subprocess 超时异常里可能携带的部分输出解码为文本。"""
     if not data:
@@ -510,11 +550,21 @@ class BackupEngine:
             extra = {}
         if extra.get("custom_script"):
             from core import remote_dump
+            from core import custom_scripts
+            # 范围校验：单表/多表必须给出表名，否则脚本必然导出错对象
+            scope = custom_scripts.normalize_scope(extra.get("custom_scope"))
+            if scope == custom_scripts.SCOPE_TABLE and not custom_scripts.parse_tables(
+                    extra.get("custom_tables")):
+                return False, ("自定义脚本备份范围为「单表/多表」但未填写表名："
+                               "请在高级选项→自定义脚本→表名中填写（逗号分隔）")
             ssh_host = remote_dump.resolve_ssh_host(self.task)
-            if not ssh_host:
-                return False, ("自定义脚本模式需要 SSH 主机执行脚本："
-                               "请按数据库地址自动匹配或在本任务中指定 SSH 主机")
-            return True, "自定义脚本模式（SSH 执行，跳过客户端检查）"
+            if ssh_host:
+                return True, (f"自定义脚本模式（SSH 执行，范围={scope}，"
+                              "跳过客户端检查）")
+            if _is_local_task(self.task):
+                return True, f"自定义脚本模式（平台本机执行，范围={scope}）"
+            return False, ("自定义脚本模式需要 SSH 主机执行脚本："
+                           "请按数据库地址自动匹配或在本任务中指定 SSH 主机")
 
         try:
             mode = self.backup_mode
@@ -947,12 +997,253 @@ class BackupEngine:
 
         from core import remote_dump
         ssh_host = remote_dump.resolve_ssh_host(self.task)
-        if not ssh_host:
-            return BackupResult(
-                success=False, status=BackupStatus.FAILED,
-                message="自定义备份脚本需要 SSH 主机执行：请纳管数据库服务器"
-                        "（按任务地址自动匹配）或在任务中指定 SSH 主机")
-        return self._backup_custom_remote(ssh_host, backup_type, extra)
+        if ssh_host:
+            return self._backup_custom_remote(ssh_host, backup_type, extra)
+        if _is_local_task(self.task):
+            return self._backup_custom_local(backup_type, extra)
+        return BackupResult(
+            success=False, status=BackupStatus.FAILED,
+            message="自定义备份脚本需要 SSH 主机执行：请纳管数据库服务器"
+                    "（按任务地址自动匹配）或在任务中指定 SSH 主机")
+
+    # ---------------- 自定义脚本：环境变量与范围 ----------------
+    @staticmethod
+    def _custom_scope_and_tables(extra: dict):
+        """读取任务的自定义备份范围与表名列表（全实例/全库/单表）。"""
+        from core import custom_scripts
+        scope = custom_scripts.normalize_scope(extra.get("custom_scope"))
+        tables = custom_scripts.parse_tables(extra.get("custom_tables"))
+        return scope, tables
+
+    def _custom_scope_label(self, extra: dict) -> str:
+        """人类可读的备份范围（写进记录 message，便于在列表里区分全库/单表）。"""
+        from core import custom_scripts
+        scope, tables = self._custom_scope_and_tables(extra)
+        label = custom_scripts.SCOPE_LABELS.get(scope, scope)
+        if scope == custom_scripts.SCOPE_TABLE and tables:
+            label += f"（表: {','.join(tables)}）"
+        return label
+
+    def _custom_backup_env_lines(self, backup_type, artifact_dir: str,
+                                extra: dict, pw: str) -> list:
+        """备份脚本注入的 PLATFORM_* 环境变量（shell 形式）。
+
+        补充了范围相关变量，使同一份脚本能按「全实例 / 全库 / 单表」导出：
+        PLATFORM_BACKUP_SCOPE、PLATFORM_TABLES、PLATFORM_DB_TYPE、PLATFORM_BACKUP_LEVEL。
+        """
+        scope, tables = self._custom_scope_and_tables(extra)
+        db_type = getattr(self, "db_type", "") or self.task.get("db_type") or ""
+        lines = []
+        # 任务级工具路径（客户端不在默认 PATH 时，如 /opt/mysql840b/bin、/pgdb/pgsql/bin）
+        tool_path = str(extra.get("tool_path") or "").strip()
+        paths = [p.strip() for p in tool_path.replace(";", ":").split(":") if p.strip()]
+        if paths:
+            lines.append("export PATH=" + ":".join(shlex_quote(p) for p in paths) + ":$PATH")
+        lines += [
+            f"export PLATFORM_BACKUP_TYPE={backup_type.value if hasattr(backup_type, 'value') else backup_type}",
+            f"export PLATFORM_BACKUP_LEVEL={backup_type.value if hasattr(backup_type, 'value') else backup_type}",
+            f"export PLATFORM_TASK_ID={self.task.get('id') or ''}",
+            f"export PLATFORM_TASK_NAME={shlex_quote(str(self.task.get('name') or ''))}",
+            f"export PLATFORM_DB_TYPE={db_type}",
+            f"export PLATFORM_DB_HOST={self.task.get('host') or ''}",
+            f"export PLATFORM_DB_PORT={self.task.get('port') or ''}",
+            f"export PLATFORM_DB_USER={self.task.get('username') or ''}",
+            f"export PLATFORM_DB_NAME={self.task.get('db_name') or ''}",
+            f"export PLATFORM_BACKUP_SCOPE={scope}",
+            f"export PLATFORM_TABLES={shlex_quote(','.join(tables))}",
+            f"export PLATFORM_BACKUP_DIR={shlex_quote(artifact_dir)}",
+        ]
+        if pw:
+            lines.append(f"export PLATFORM_DB_PASSWORD={shlex_quote(pw)}")
+        return lines
+
+    def _custom_backup_env(self, backup_type, artifact_dir: str,
+                           extra: dict, pw: str) -> list:
+        return self._custom_backup_env_lines(backup_type, artifact_dir, extra, pw)
+
+    @staticmethod
+    def _custom_env_map(lines: list) -> dict:
+        """把 shell 形式的 `export K='v'` 转成 subprocess 可用的 env dict。"""
+        env = os.environ.copy()
+        for line in lines:
+            if not line.startswith("export "):
+                continue
+            body = line[len("export "):]
+            if "=" not in body:
+                continue
+            k, v = body.split("=", 1)
+            try:
+                import shlex as _shlex
+                parts = _shlex.split(v)
+                v = parts[0] if parts else ""
+            except Exception:
+                v = v.strip("'\"")
+            if k == "PATH":
+                # shell 里的 $PATH 需还原为真实 PATH，否则子进程连 bash 都找不到
+                base_path = os.environ.get("PATH", "")
+                v = v.replace("${PATH}", base_path).replace("$PATH", base_path)
+            env[k] = v
+        return env
+
+    def _backup_custom_local(self, backup_type, extra: dict) -> BackupResult:
+        """自定义备份脚本的**平台本机**执行通道（数据库与平台同机，无 SSH 主机）。
+
+        与 SSH 通道行为一致：注入相同 PLATFORM_* 变量、扫描产物目录、
+        复制产物到任务输出目录并计算真实 size/sha256、生成 manifest。
+        """
+        import tempfile
+        import time as _time
+
+        ts = self._timestamp()
+        task_id = self.task.get("id") or "x"
+        script_body = str(extra.get("custom_script") or "")
+        artifact_dir = (extra.get("custom_artifact_dir") or
+                        f"/var/tmp/platform_backup/{task_id}/{ts}").rstrip("/")
+        timeout_sec = int(extra.get("custom_timeout") or 7200)
+        pw = db.decrypt_secret(self.task.get("password") or "")
+        env_lines = self._custom_backup_env(backup_type, artifact_dir, extra, pw)
+
+        try:
+            os.makedirs(artifact_dir, exist_ok=True)
+        except Exception as e:
+            return BackupResult(success=False, status=BackupStatus.FAILED,
+                                message=f"无法创建产物目录 {artifact_dir}: {e}")
+
+        fd, script_path = tempfile.mkstemp(prefix=f"platform_custom_{task_id}_",
+                                           suffix=".sh")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(script_body if script_body.endswith("\n") else script_body + "\n")
+            os.chmod(script_path, 0o700)
+            start = _time.time()
+            rc, out_b, err_b, duration = _local_bash(
+                script_path, self._custom_env_map(env_lines), timeout_sec)
+            out_text = out_b.decode("utf-8", "replace") if isinstance(out_b, bytes) else (out_b or "")
+            err_text = err_b.decode("utf-8", "replace") if isinstance(err_b, bytes) else (err_b or "")
+
+            if rc != 0:
+                snippet = (out_text or err_text)[-1500:]
+                return BackupResult(
+                    success=False, status=BackupStatus.FAILED, duration_sec=duration,
+                    stdout=out_text, stderr=err_text,
+                    message=f"自定义备份脚本本机执行失败(rc={rc}): {snippet}")
+
+            artifacts = []
+            for fname in os.listdir(artifact_dir):
+                p = os.path.join(artifact_dir, fname)
+                if not os.path.isfile(p) or os.path.getsize(p) <= 0:
+                    continue
+                if os.path.getmtime(p) < start - 5:
+                    continue
+                artifacts.append((fname, p, os.path.getsize(p)))
+            if not artifacts:
+                return BackupResult(
+                    success=False, status=BackupStatus.FAILED, duration_sec=duration,
+                    stdout=out_text, stderr=err_text,
+                    message=("自定义脚本执行成功但未产出备份文件："
+                             f"请把产物写入 $PLATFORM_BACKUP_DIR（本次为 {artifact_dir}）"))
+
+            out_dir = self._output_dir()
+            os.makedirs(out_dir, exist_ok=True)
+            local_files, total = [], 0
+            for fname, src, _sz in artifacts:
+                dst = os.path.join(out_dir, fname)
+                shutil.copy2(src, dst)
+                local_files.append((dst, os.path.getsize(dst)))
+                total += os.path.getsize(dst)
+            local_files.sort(key=lambda x: -x[1])
+            primary = local_files[0][0]
+            checksum = db.sha256_file(primary)
+
+            manifest = os.path.join(out_dir, f"{ts}_custom_manifest.txt")
+            with open(manifest, "w", encoding="utf-8") as mf:
+                mf.write("Custom backup script (local channel)\n")
+                mf.write(f"task: {self.task_name}\n")
+                mf.write(f"backup_type: {getattr(backup_type, 'value', backup_type)}\n")
+                mf.write(f"scope: {self._custom_scope_and_tables(extra)[0]}\n")
+                mf.write(f"artifact_dir: {artifact_dir}\n")
+                for p, sz in local_files:
+                    mf.write(f"{os.path.basename(p)}\t{sz}\t{db.sha256_file(p)}\n")
+
+            self._custom_cleanup_local(artifact_dir, extra)
+            msg = (f"自定义备份脚本在平台本机执行成功（范围: {self._custom_scope_label(extra)}），"
+                   f"产出 {len(local_files)} 个文件共 {db.human_size(total)}"
+                   f"（主文件: {os.path.basename(primary)}）")
+            self.logger.info("[%s] %s", self.task_name, msg)
+            return BackupResult(success=True, status=BackupStatus.SUCCESS,
+                                backup_path=primary, size_bytes=total,
+                                duration_sec=duration, stdout=out_text, stderr=err_text,
+                                simulated=False, checksum=checksum, message=msg)
+        finally:
+            try:
+                os.unlink(script_path)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _custom_cleanup_local(artifact_dir: str, extra: dict) -> None:
+        """脚本产物留在远端/本机临时目录会持续占用磁盘，默认成功后清理。"""
+        if str(extra.get("custom_cleanup") or "1") not in ("1", "true", "yes", "on"):
+            return
+        if extra.get("custom_artifact_dir"):
+            return  # 用户指定目录：可能是归档路径，不擅自删除
+        try:
+            shutil.rmtree(artifact_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    def _restore_custom_local(self, backup_path: str, script: str,
+                              extra: dict, **kwargs) -> BackupResult:
+        """自定义恢复脚本的平台本机执行通道（与 SSH 通道注入变量一致）。"""
+        import tempfile
+        import time as _time
+
+        timeout_sec = int(extra.get("custom_timeout") or 7200)
+        scope, tables = self._custom_scope_and_tables(extra)
+        db_type = getattr(self, "db_type", "") or self.task.get("db_type") or ""
+        pw = db.decrypt_secret(self.task.get("password") or "")
+        _tool = str(extra.get("tool_path") or "").strip()
+        _paths = [p.strip() for p in _tool.replace(";", ":").split(":") if p.strip()]
+        env_lines = ([("export PATH=" + ":".join(shlex_quote(p) for p in _paths) + ":$PATH")]
+                     if _paths else []) + [
+            f"export PLATFORM_BACKUP_FILE={shlex_quote(backup_path)}",
+            f"export PLATFORM_RESTORE_DB={shlex_quote(str(kwargs.get('target_db') or self.task.get('db_name') or ''))}",
+            f"export PLATFORM_RESTORE_SCOPE={scope}",
+            f"export PLATFORM_TABLES={shlex_quote(','.join(tables))}",
+            f"export PLATFORM_DB_TYPE={db_type}",
+            f"export PLATFORM_TASK_ID={self.task.get('id') or ''}",
+            f"export PLATFORM_DB_HOST={self.task.get('host') or ''}",
+            f"export PLATFORM_DB_PORT={self.task.get('port') or ''}",
+            f"export PLATFORM_DB_USER={self.task.get('username') or ''}",
+            f"export PLATFORM_DB_NAME={self.task.get('db_name') or ''}",
+        ]
+        if pw:
+            env_lines.append(f"export PLATFORM_DB_PASSWORD={shlex_quote(pw)}")
+
+        fd, script_path = tempfile.mkstemp(prefix="platform_custom_restore_", suffix=".sh")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(script if script.endswith("\n") else script + "\n")
+            os.chmod(script_path, 0o700)
+            rc, out_b, err_b, duration = _local_bash(
+                script_path, self._custom_env_map(env_lines), timeout_sec)
+            out_text = out_b.decode("utf-8", "replace") if isinstance(out_b, bytes) else (out_b or "")
+            err_text = err_b.decode("utf-8", "replace") if isinstance(err_b, bytes) else (err_b or "")
+            if rc != 0:
+                detail = (out_text or err_text or "")[-1200:]
+                return BackupResult(success=False, status=BackupStatus.FAILED,
+                                    duration_sec=duration, stdout=out_text, stderr=err_text,
+                                    message=f"自定义恢复脚本本机执行失败(rc={rc}): {detail}")
+            msg = (f"自定义恢复脚本在平台本机执行成功（耗时 {duration}s，"
+                   f"备份文件: {os.path.basename(backup_path)}）")
+            return BackupResult(success=True, status=BackupStatus.SUCCESS,
+                                backup_path=backup_path, duration_sec=duration,
+                                stdout=out_text, simulated=False, message=msg)
+        finally:
+            try:
+                os.unlink(script_path)
+            except Exception:
+                pass
 
     def _backup_custom_remote(self, ssh_host: dict, backup_type: BackupType,
                               extra: dict) -> BackupResult:
@@ -989,18 +1280,7 @@ class BackupEngine:
 
             pw = db.decrypt_secret(self.task.get("password") or "")
             start = _time.time()
-            env_lines = [
-                f"export PLATFORM_BACKUP_TYPE={backup_type.value}",
-                f"export PLATFORM_TASK_ID={task_id}",
-                f"export PLATFORM_TASK_NAME={shlex_quote(str(self.task.get('name') or ''))}",
-                f"export PLATFORM_DB_HOST={self.task.get('host') or ''}",
-                f"export PLATFORM_DB_PORT={self.task.get('port') or ''}",
-                f"export PLATFORM_DB_USER={self.task.get('username') or ''}",
-                f"export PLATFORM_DB_NAME={self.task.get('db_name') or ''}",
-                f"export PLATFORM_BACKUP_DIR={artifact_dir}",
-            ]
-            if pw:
-                env_lines.append(f"export PLATFORM_DB_PASSWORD={shlex_quote(pw)}")
+            env_lines = self._custom_backup_env(backup_type, artifact_dir, extra, pw)
             inner = ("mkdir -p " + artifact_dir + " && "
                      + " && ".join(env_lines)
                      + f" && bash {remote_script}")
@@ -1064,9 +1344,23 @@ class BackupEngine:
                 for p, sz in local_files:
                     mf.write(f"{os.path.basename(p)}\t{sz}\t{db.sha256_file(p)}\n")
 
+            # 清理数据库服务器上的临时脚本与产物（默认开启，用户指定目录时不删）
+            if (str(extra.get("custom_cleanup") or "1").lower() in ("1", "true", "yes", "on")
+                    and not extra.get("custom_artifact_dir")):
+                try:
+                    _ssh_exec_pipe(
+                        client,
+                        remote_dump._wrap_login(
+                            f"rm -rf {shlex_quote(artifact_dir)} {shlex_quote(remote_script)}"),
+                        timeout=60)
+                except Exception as e:
+                    self.logger.warning("[%s] 远端临时产物清理失败（忽略）: %s",
+                                        self.task_name, e)
+
             hk = ssh_host.get("host_key", "remote")
-            msg = (f"自定义备份脚本在 {hk} 执行成功，拉回 {len(local_files)} 个产物"
-                   f"共 {db.human_size(total)}（主文件: {os.path.basename(primary)}）")
+            msg = (f"自定义备份脚本在 {hk} 执行成功（范围: {self._custom_scope_label(extra)}），"
+                   f"拉回 {len(local_files)} 个产物共 {db.human_size(total)}"
+                   f"（主文件: {os.path.basename(primary)}）")
             self.logger.info("[%s] %s", self.task_name, msg)
             return BackupResult(
                 success=True, status=BackupStatus.SUCCESS,
@@ -1094,17 +1388,18 @@ class BackupEngine:
 
         from core import remote_dump
         ssh_host = kwargs.get("target_host_info") or remote_dump.resolve_ssh_host(self.task)
-        if not ssh_host:
-            return BackupResult(
-                success=False, status=BackupStatus.FAILED,
-                message="自定义恢复脚本需要 SSH 主机（恢复表单选择目标主机）")
-
         if not backup_path or not os.path.exists(backup_path):
             return BackupResult(
                 success=False, status=BackupStatus.FAILED,
                 message=f"本地备份文件不存在: {backup_path}")
 
-        return self._restore_custom_remote(ssh_host, backup_path, script, extra, **kwargs)
+        if ssh_host:
+            return self._restore_custom_remote(ssh_host, backup_path, script, extra, **kwargs)
+        if _is_local_task(self.task):
+            return self._restore_custom_local(backup_path, script, extra, **kwargs)
+        return BackupResult(
+            success=False, status=BackupStatus.FAILED,
+            message="自定义恢复脚本需要 SSH 主机（恢复表单选择目标主机）")
 
     def _restore_custom_remote(self, ssh_host: dict, backup_path: str,
                                script: str, extra: dict, **kwargs) -> BackupResult:
@@ -1133,9 +1428,16 @@ class BackupEngine:
 
             start = _time.time()
             pw2 = db.decrypt_secret(self.task.get("password") or "")
-            env_lines = [
+            _scope, _tables = self._custom_scope_and_tables(extra)
+            _tool = str(extra.get("tool_path") or "").strip()
+            _paths = [p.strip() for p in _tool.replace(";", ":").split(":") if p.strip()]
+            env_lines = ([("export PATH=" + ":".join(shlex_quote(p) for p in _paths) + ":$PATH")]
+                         if _paths else []) + [
                 f"export PLATFORM_BACKUP_FILE={shlex_quote(remote_file)}",
                 f"export PLATFORM_RESTORE_DB={shlex_quote(str(kwargs.get('target_db') or self.task.get('db_name') or ''))}",
+                f"export PLATFORM_RESTORE_SCOPE={_scope}",
+                f"export PLATFORM_TABLES={shlex_quote(','.join(_tables))}",
+                f"export PLATFORM_DB_TYPE={getattr(self, 'db_type', '') or self.task.get('db_type') or ''}",
                 f"export PLATFORM_TASK_ID={self.task.get('id') or ''}",
                 f"export PLATFORM_DB_HOST={self.task.get('host') or ''}",
                 f"export PLATFORM_DB_PORT={self.task.get('port') or ''}",

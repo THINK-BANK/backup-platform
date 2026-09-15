@@ -1,0 +1,233 @@
+{
+  "base": "http://127.0.0.1:8080",
+  "started_at": "2026-09-15 10:40:05",
+  "api_count": 112,
+  "api_skipped": [
+    "/api/agent/sessions/<session_id>/messages",
+    "/api/cdc/streams/<int:sid>/events",
+    "/api/cdc/streams/<int:sid>/status",
+    "/api/clone/<int:request_id>",
+    "/api/data-compare-reports/<int:report_id>",
+    "/api/datamining/exports/<int:export_id>/download",
+    "/api/datamining/records/<int:source_record_id>/suggest",
+    "/api/db-adapters/<int:aid>",
+    "/api/deploy/<int:dep_id>",
+    "/api/deploy/<int:dep_id>/log",
+    "/api/disaster-links/<int:link_id>",
+    "/api/drills/<int:drill_id>",
+    "/api/jdbc/drivers/<name>/download",
+    "/api/plugins/<pid>",
+    "/api/plugins/<pid>/log",
+    "/api/plugins/<pid>/state",
+    "/api/storage/targets/<int:target_id>"
+  ],
+  "phase_a": {
+    "requests": 1200,
+    "ok": 1200,
+    "failed": 0,
+    "qps": 159.5,
+    "avg_ms": 857.8,
+    "p50_ms": 871.5,
+    "p95_ms": 1297.9,
+    "p99_ms": 1754.9,
+    "max_ms": 2196.7,
+    "codes": {
+      "201": 1200
+    },
+    "errors": [],
+    "created": 1200,
+    "elapsed": 7.5
+  },
+  "phase_b": {
+    "requests": 1200,
+    "ok": 1200,
+    "failed": 0,
+    "qps": 13.4,
+    "avg_ms": 10471.5,
+    "p50_ms": 11131.9,
+    "p95_ms": 11331.3,
+    "p99_ms": 11397.6,
+    "max_ms": 22319.1,
+    "codes": {
+      "200": 1200
+    },
+    "errors": [],
+    "elapsed": 89.4,
+    "result": {
+      "success": 1200,
+      "failed": 0,
+      "other": 0,
+      "none": 0
+    }
+  },
+  "phase_b2": {
+    "ok": true,
+    "total": 1200,
+    "by_status": {
+      "success": 1200
+    },
+    "empty_size": 0,
+    "missing_file": 0,
+    "no_checksum": 0
+  },
+  "phase_c": {
+    "requests": 560,
+    "ok": 500,
+    "failed": 60,
+    "qps": 81.8,
+    "avg_ms": 875.7,
+    "p50_ms": 891.1,
+    "p95_ms": 1271.2,
+    "p99_ms": 1702.1,
+    "max_ms": 5243.6,
+    "codes": {
+      "200": 500,
+      "404": 35,
+      "400": 25
+    },
+    "errors": [],
+    "elapsed": 6.8
+  },
+  "phase_d": [
+    {
+      "name": "GET /api/tasks 返回数组且字段完整",
+      "ok": true,
+      "detail": "共 1262 条"
+    },
+    {
+      "name": "POST /api/tasks 创建成功",
+      "ok": true,
+      "detail": "id=3394"
+    },
+    {
+      "name": "GET /api/tasks/{id} 字段与提交一致",
+      "ok": true,
+      "detail": "name=ST-ROUNDTRIP-1789440109 db=rt_db"
+    },
+    {
+      "name": "PUT /api/tasks/{id} 更新生效",
+      "ok": true,
+      "detail": "retention_days=15"
+    },
+    {
+      "name": "DELETE 后查询返回 404",
+      "ok": true,
+      "detail": "delete=200 get=404"
+    },
+    {
+      "name": "GET /api/records 含关键字段",
+      "ok": true,
+      "detail": "样例 id=5329 task=3392"
+    },
+    {
+      "name": "GET /api/records/{id} 单条可读",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "GET /api/records?task_id 过滤生效",
+      "ok": true,
+      "detail": "1 条"
+    },
+    {
+      "name": "GET /api/records?limit 分页/截断生效",
+      "ok": true,
+      "detail": "5 条"
+    },
+    {
+      "name": "GET /api/dashboard 返回汇总字段",
+      "ok": true,
+      "detail": "keys=['compression_pct', 'db_counter', 'db_counter_display', 'db_task_count', 'encrypt_pool_tasks', 'file_task_count', 'health_details', 'health_score']"
+    },
+    {
+      "name": "模板接口 scope=full_database 返回脚本",
+      "ok": true,
+      "detail": "backup=824B"
+    },
+    {
+      "name": "模板接口 scope=single_table 返回脚本",
+      "ok": true,
+      "detail": "backup=848B"
+    },
+    {
+      "name": "模板接口 scope=full_instance 返回脚本",
+      "ok": true,
+      "detail": "backup=974B"
+    },
+    {
+      "name": "模板接口 PG 单表含 PLATFORM_TABLES",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "非法任务入参返回 4xx（非 5xx）",
+      "ok": true,
+      "detail": "HTTP 400"
+    },
+    {
+      "name": "不存在的任务返回 404",
+      "ok": true,
+      "detail": "HTTP 404"
+    },
+    {
+      "name": "不存在的记录返回 404",
+      "ok": true,
+      "detail": "HTTP 404"
+    },
+    {
+      "name": "并发读同一任务结果一致（无脏读/串数据）",
+      "ok": true,
+      "detail": "1 种不同响应"
+    }
+  ],
+  "phase_e": {
+    "requests": 2646,
+    "ok": 2413,
+    "failed": 233,
+    "qps": 84.2,
+    "avg_ms": 925.6,
+    "p50_ms": 917.8,
+    "p95_ms": 1273.6,
+    "p99_ms": 1530.1,
+    "max_ms": 4137.2,
+    "codes": {
+      "200": 2250,
+      "201": 163,
+      "404": 146,
+      "400": 87
+    },
+    "errors": [],
+    "elapsed": 31.4
+  },
+  "phase_f": {
+    "requests": 720,
+    "ok": 480,
+    "failed": 240,
+    "qps": 208.4,
+    "avg_ms": 311.8,
+    "p50_ms": 327.4,
+    "p95_ms": 586.1,
+    "p99_ms": 634.5,
+    "max_ms": 946.4,
+    "codes": {
+      "201": 240,
+      "200": 240,
+      "400": 120,
+      "404": 120
+    },
+    "errors": [],
+    "elapsed": 3.5,
+    "bad": 0
+  },
+  "resource": {
+    "rss_mb_max": 360.4,
+    "rss_mb_last": 359.7,
+    "cpu_sec_max": 381.4,
+    "threads_max": 172,
+    "samples": 48
+  },
+  "platform_errors_during_test": 0,
+  "platform_error_samples": [],
+  "total_elapsed": 153.9,
+  "passed": true
+}

@@ -31,6 +31,7 @@
         <a class="nav-link {% if page=='plugins' %}active{% endif %}" href="/plugins" title="备份依赖插件（一键安装 xtrabackup / percona / mariabackup 等）" data-perm="backup.plugins.manage"><i class="bi bi-plug"></i> <span class="nav-label">备份插件</span></a>
         <a class="nav-link {% if page=='db-adapters' %}active{% endif %}" href="/db-adapters" title="可插拔数据库类型（界面新增一种数据库即可用于备份/恢复）" data-perm="backup.dbtypes.manage"><i class="bi bi-stack"></i> <span class="nav-label">数据库类型</span></a>
         <a class="nav-link {% if page=='rt_timeline' %}active{% endif %}" href="/rt-timeline" title="实时备份（准 CDP）" data-perm="rt.manage"><i class="bi bi-broadcast-pin"></i> <span class="nav-label">实时备份</span></a>
+        <a class="nav-link {% if page=='cdc' %}active{% endif %}" href="/cdc" title="CDC 实时备份：行级变更捕获，任意时间点回滚/重放" data-perm="rt.manage"><i class="bi bi-broadcast"></i> <span class="nav-label">CDC 实时备份</span></a>
         <div class="nav-group-label">数据恢复管理</div>
         <a class="nav-link {% if page=='restore' %}active{% endif %}" href="/restore" title="数据恢复" data-perm="restore.run"><i class="bi bi-arrow-counterclockwise"></i> <span class="nav-label">数据恢复</span></a>
         <a class="nav-link {% if page=='restore-verify' %}active{% endif %}" href="/restore-verify" title="恢复校验" data-perm="restore.verify.manage"><i class="bi bi-patch-check"></i> <span class="nav-label">恢复校验</span></a>
