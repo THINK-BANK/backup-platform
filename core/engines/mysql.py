@@ -612,23 +612,41 @@ class MySQLEngine(BackupEngine):
                 inc_note = " 未找到可用物理基备，已自动退化为全量"
 
         client = remote_dump._connect(ssh_host)
-        remote_tmp = f"/tmp/mysql_xtra_{ts}"
-        remote_tar = f"{remote_tmp}.tar.gz"
+        # 固定产物形态：远端路径**确定性**（按任务+全量/增量区分，不含随机时间戳），
+        # 备份成功后写完成标记；拉回中断时重试可复用远端产物并续传拉回，
+        # 不需要重跑一趟可能长达数小时的物理备份。
+        kind = "inc" if inc_lsn else "full"
+        remote_tmp = remote_dump.fixed_remote_path(
+            self.task, f"{self.db_type}_phys", f"{kind}.d")
+        remote_tar = remote_dump.fixed_remote_path(
+            self.task, f"{self.db_type}_phys", f"{kind}.tar.gz")
         remote_cnf = "/tmp/bk_xtrabackup.cnf"
         pushed_bin = None
         pushed_libs_dir = None
         env_pre = ""
         push_note = ""
+        keep_remote = False          # 拉回失败时保留远端产物+标记，供重试复用
+        hk = ssh_host.get("host_key", "remote")
         sftp = client.open_sftp()
         try:
+            # 0) 复用探测：上一次若已完成备份（远端写了 .bkdone 标记）但拉回中断，
+            #    产物与标记仍在远端 → 跳过重跑备份，直接断点续传拉回。
+            #    物理备份可能跑数小时，重跑一遍的代价不可接受。
+            ready = remote_dump.remote_artifact_ready(client, remote_tar, min_size=1024)
+            reuse = bool(ready["reusable"])
+            if reuse:
+                self.logger.info(
+                    "[%s] 复用远端已完成物理产物 %s（%s），跳过重新执行备份",
+                    self.task_name, remote_tar, db.human_size(ready["size"]))
+
             # 远端零安装原则：优先使用数据库服务器自带的 xtrabackup/mariabackup；
             # 找不到则从平台推送对应版本二进制到 /tmp 临时执行（结束即清理），
             # 数据库服务器上不安装、不落地任何备份工具。
-            server_ver = self._server_version_str()
-            tool = remote_dump._resolve_remote_bin(client, "xtrabackup")
-            if not tool:
+            server_ver = self._server_version_str() if not reuse else ""
+            tool = "" if reuse else remote_dump._resolve_remote_bin(client, "xtrabackup")
+            if not reuse and not tool:
                 tool = remote_dump._resolve_remote_bin(client, "mariabackup")
-            if not tool:
+            if not tool and not reuse:
                 local_bin, bin_label = self._pick_physical_bin(server_ver)
                 if not os.path.isfile(local_bin):
                     return BackupResult(
@@ -674,25 +692,34 @@ class MySQLEngine(BackupEngine):
                 pass
 
             # 2) 创建远端备份目录（/tmp 世界可写，无需 chown）
-            prep = f"mkdir -p {remote_tmp}"
+            prep = f"mkdir -p {remote_tmp} $(dirname {remote_tar})"
             _ssh_exec_pipe(client, remote_dump._wrap_login(prep), timeout=60)
 
             # 3) 远端执行：xtrabackup --backup -> tar czf（密码不在命令行）
             # 注意：--defaults-file 必须是第一个参数（xtrabackup 硬性要求）
             inc_flag = f"--incremental-lsn={inc_lsn} " if inc_lsn else ""
-            inner = (
-                f"{env_pre}{tool} --defaults-file={remote_cnf} "
-                f"--backup --target-dir={remote_tmp} "
-                f"--host={shlex.quote(host)} --port={port} --no-lock "
-                f"{inc_flag}"
-                f"&& tar czf {remote_tar} -C {remote_tmp} ."
-            )
+            if reuse:
+                inner = "true"      # 产物已就绪，本次只需拉回
+            else:
+                # xtrabackup 要求 target-dir 为空目录；重试时先清掉上次残留
+                inner = (
+                    f"rm -rf {remote_tmp} && {env_pre}{tool} "
+                    f"--defaults-file={remote_cnf} "
+                    f"--backup --target-dir={remote_tmp} "
+                    f"--host={shlex.quote(host)} --port={port} --no-lock "
+                    f"{inc_flag}"
+                    f"&& tar czf {remote_tar} -C {remote_tmp} ."
+                )
             wrapped = remote_dump._wrap_login(inner)
             start = time.time()
             out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=7200)
-            duration = round(time.time() - start, 3)
+            duration = 0.0 if reuse else round(time.time() - start, 3)
             out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
-            self.logger.info("[%s] 远端 xtrabackup 返回 rc=%s", self.task_name, rc)
+            if reuse:
+                out_text = (f"复用远端已完成产物 {remote_tar}"
+                            f"（{db.human_size(ready['size'])}），跳过备份执行，直接断点续传拉回")
+            else:
+                self.logger.info("[%s] 远端 xtrabackup 返回 rc=%s", self.task_name, rc)
 
             if rc != 0:
                 snippet = (out_text or err)[-1200:]
@@ -701,17 +728,33 @@ class MySQLEngine(BackupEngine):
                     duration_sec=duration, stdout=out_text, stderr=err,
                     message=f"远端 XtraBackup 物理备份失败(rc={rc}): {snippet}")
 
-            # 4) SFTP 拉回 tar.gz 到本机，计算真实 size + sha256
-            # 产物名区分 full/inc：恢复侧据此识别增量链（含 to_lsn 元数据）
-            kind = "inc" if inc_lsn else "full"
-            local_path = os.path.join(out_dir, f"xtrabackup_{kind}_{ts}.tar.gz")
-            sftp.get(remote_tar, local_path)
+            # 3.5) 写远端完成标记：下一次重试据此复用产物而**不重跑备份**
+            if not reuse:
+                try:
+                    fsize = int(sftp.stat(remote_tar).st_size or 0)
+                except Exception:
+                    fsize = -1
+                remote_dump.mark_remote_artifact_done(
+                    client, remote_tar, size=fsize, note=f"mysql {kind} {hk}")
 
-            size = os.path.getsize(local_path)
-            checksum = db.sha256_file(local_path)
-            hk = ssh_host.get("host_key", "remote")
-            msg = (f"通过 SSH 在 {hk} 以 {os.path.basename(tool)} 执行 MySQL 物理备份成功，"
-                   f"已拉回 {local_path} ({db.human_size(size)}){push_note}{inc_note}")
+            # 4) 断点续传拉回 tar.gz 到本机（中断后重试从断点继续，不重跑备份）
+            # 产物名区分 full/inc：恢复侧据此识别增量链（含 to_lsn 元数据）
+            local_path = os.path.join(out_dir, f"xtrabackup_{kind}_{ts}.tar.gz")
+            keep_remote = True          # 拉回成功落盘前，远端产物一律保留
+            pulled = remote_dump.sftp_pull_resumable(
+                client, remote_tar, local_path, task=self.task,
+                key=f"{kind}.tar.gz", db_type=f"{self.db_type}_phys",
+                host_key=hk, has_rc=False, stable_secs=3,
+                label=f"xtrabackup {kind}", min_size=1024)
+            keep_remote = False         # 已完整落盘 → 远端产物可清理
+            size = pulled["size"]
+            checksum = pulled["sha256"]
+            tool_label = os.path.basename(tool) if tool else "远端已有产物"
+            msg = (f"通过 SSH 在 {hk} 以 {tool_label} 执行 MySQL 物理备份成功，"
+                   f"已拉回 {local_path} ({db.human_size(size)})"
+                   f"{'（复用上次远端产物，未重跑备份）' if reuse else ''}"
+                   f"{'（断点续传）' if pulled['resumed'] else ''}"
+                   f"{push_note}{inc_note}")
             self.logger.info("[%s] %s", self.task_name, msg)
 
             # 清理远端临时目录与 tar 包（best-effort，失败不致命）
@@ -731,12 +774,19 @@ class MySQLEngine(BackupEngine):
                 sftp.remove(remote_cnf)
             except Exception:
                 pass
-            # 清理远端临时产物与推送到远端的二进制/动态库（成功/失败路径均覆盖）
+            # 清理远端临时产物与推送到远端的二进制/动态库（成功/失败路径均覆盖）。
+            # 例外：拉回中断时保留产物 + 完成标记（keep_remote），下次重试据此复用，
+            # 避免重跑数小时的物理备份；数据库服务器上最终仍不留任何产物。
             try:
                 from core.engines.file import _ssh_exec_pipe as _sep
-                _sep(client, remote_dump._wrap_login(
-                    f"rm -rf {remote_tmp} {remote_tar} {pushed_bin or ''} "
-                    f"{pushed_libs_dir or ''}"), timeout=60)
+                if keep_remote:
+                    to_del = (f"{pushed_bin or ''} {pushed_libs_dir or ''}")
+                else:
+                    to_del = (f"{remote_tmp} {remote_tar} "
+                              f"{remote_dump.marker_path(remote_tar)} "
+                              f"{remote_dump.marker_path(remote_tmp, True)} "
+                              f"{pushed_bin or ''} {pushed_libs_dir or ''}")
+                _sep(client, remote_dump._wrap_login(f"rm -rf {to_del}"), timeout=60)
             except Exception:
                 pass
             try:

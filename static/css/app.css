@@ -652,3 +652,114 @@ textarea.form-control { height: auto; padding: 8px 12px; }
 .link-card .route-table td { font-size: .82rem; padding: .3rem .5rem; }
 .link-actions { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .75rem; }
 .link-meta { font-size: .78rem; color: var(--text-muted); margin-top: .5rem; }
+
+/* =============================================================
+   数据价值挖掘（Data Mining & Governance）· v20260915
+   资产盘点 / 敏感发现与分级 / 价值评估与治理 / 合规概览 / 脱敏导出
+   ============================================================= */
+.dm-tabs .nav-link { font-size: .88rem; }
+
+/* ---- KPI 卡片 ---- */
+.dm-kpi-v { font-size: 1.45rem; font-weight: 700; color: var(--primary); line-height: 1.2; }
+.dm-kpi-t { font-size: .84rem; color: var(--text-secondary); margin-top: 2px; font-weight: 600; }
+.dm-kpi-s { font-size: .72rem; color: var(--text-muted); }
+
+/* ---- 图表 ---- */
+.dm-chart { width: 100%; }
+.dm-grid { stroke: var(--border-base); stroke-width: 1; stroke-dasharray: 3 3; }
+.dm-axis { font-size: 10px; fill: var(--text-muted); }
+
+.dm-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.dm-bar-label { width: 40%; font-size: .78rem; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dm-bar-track { flex: 1; height: 10px; background: var(--border-base);
+  border-radius: 5px; overflow: hidden; }
+.dm-bar-fill { height: 100%; border-radius: 5px; }
+.dm-bar-val { width: 90px; text-align: right; font-size: .76rem; color: var(--text-muted); }
+
+/* ---- 分级徽章 ---- */
+.dm-lv { display: inline-block; padding: 1px 7px; border-radius: 10px;
+  font-size: .72rem; font-weight: 600; white-space: nowrap; }
+.dm-lv-0 { background: #F1F5F9; color: var(--text-muted); }
+.dm-lv-1 { background: var(--primary-light); color: var(--primary); }
+.dm-lv-2 { background: #E0E7FF; color: #4338CA; }
+.dm-lv-3 { background: var(--warning-light); color: var(--warning); }
+.dm-lv-4 { background: var(--error-light); color: var(--error); }
+
+.dm-badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: .74rem; font-weight: 600; }
+.dm-badge-success { background: var(--success-light); color: var(--success); }
+.dm-badge-warn { background: var(--warning-light); color: var(--warning); }
+.dm-badge-danger { background: var(--error-light); color: var(--error); }
+.dm-badge-muted { background: #F1F5F9; color: var(--text-muted); }
+
+.dm-cold-hot { background: #FEE2E2; color: #B91C1C; }
+.dm-cold-warm { background: var(--warning-light); color: var(--warning); }
+.dm-cold-cold { background: var(--primary-light); color: var(--primary); }
+.dm-cold-frozen { background: #E2E8F0; color: #475569; }
+
+.dm-sub { font-size: .72rem; color: var(--text-muted); }
+.dm-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .76rem; }
+.dm-sample { display: inline-block; background: #F8FAFC; border: 1px solid var(--border-base);
+  border-radius: 4px; padding: 0 5px; margin-right: 4px; color: var(--text-secondary); }
+.dm-tag { display: inline-block; font-size: .68rem; padding: 0 5px; margin-right: 3px;
+  border: 1px solid var(--border-strong); border-radius: 3px; color: var(--text-secondary); }
+
+/* ---- 维度构成条 ---- */
+.dm-dims { display: flex; gap: 4px; min-width: 210px; }
+.dm-dim { position: relative; flex: 1; height: 16px; background: var(--border-base);
+  border-radius: 3px; overflow: hidden; }
+.dm-dim-fill { position: absolute; left: 0; top: 0; height: 100%;
+  background: linear-gradient(90deg, var(--primary), #5EEAD4); }
+.dm-dim-t { position: absolute; inset: 0; font-size: .66rem; text-align: center;
+  line-height: 16px; color: var(--text-primary); }
+
+/* ---- 治理建议 ---- */
+.dm-act { border: 1px solid var(--border-base); border-left-width: 3px;
+  border-radius: var(--radius-md); padding: 10px 12px; margin-bottom: 8px; background: #FFF; }
+.dm-act-danger { border-left-color: var(--error); }
+.dm-act-warning { border-left-color: var(--warning); }
+.dm-act-info { border-left-color: var(--primary); }
+.dm-act-head { font-size: .86rem; }
+.dm-act-body { font-size: .78rem; color: var(--text-secondary); margin-top: 2px; }
+.dm-act-list { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+.dm-chip { font-size: .7rem; background: var(--page-bg); border: 1px solid var(--border-base);
+  border-radius: 10px; padding: 1px 8px; color: var(--text-secondary); }
+
+/* ---- 敏感发现 ---- */
+.dm-scan-sum { font-size: .82rem; padding: 6px 10px; background: var(--primary-bg);
+  border: 1px solid var(--primary-light); border-radius: var(--radius-md); margin-bottom: 8px; }
+.dm-ok { padding: 10px; border-radius: var(--radius-md); background: var(--success-light);
+  color: var(--success); font-size: .84rem; }
+
+/* ---- 合规检查项 ---- */
+.dm-check { border: 1px solid var(--border-base); border-radius: var(--radius-md);
+  padding: 9px 12px; margin-bottom: 7px; background: #FFF; }
+.dm-check.pass, .dm-check.dm-check-pass { border-left: 3px solid var(--success); }
+.dm-check.dm-check-warn { border-left: 3px solid var(--warning); }
+.dm-check.dm-check-fail { border-left: 3px solid var(--error); }
+.dm-check.dm-check-unknown { border-left: 3px solid var(--border-strong); opacity: .85; }
+.dm-check-head { display: flex; align-items: center; gap: 8px; font-size: .86rem; }
+.dm-check-head b { font-weight: 600; }
+.dm-check-detail { font-size: .78rem; color: var(--text-secondary); margin-top: 2px; }
+.dm-check-advice { font-size: .74rem; color: var(--text-muted); margin-top: 2px; }
+
+.dm-ring { width: 130px; height: 130px; border-radius: 50%; margin: 6px auto 0;
+  display: flex; align-items: center; justify-content: center;
+  background: conic-gradient(var(--text-muted) 0%, rgba(148,163,184,.22) 0); }
+.dm-ring span { width: 100px; height: 100px; border-radius: 50%; background: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.9rem; font-weight: 700; color: var(--text-primary); }
+.dm-grade { font-size: 1rem; font-weight: 700; color: var(--primary); }
+
+.dm-row-item { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; padding: 4px 0; border-bottom: 1px dashed var(--border-base); font-size: .82rem; }
+.dm-row-item:last-child { border-bottom: none; }
+.dm-muted { color: var(--text-muted); }
+.dm-search { display: inline-block; }
+
+@media (max-width: 768px) {
+  .dm-bar-label { width: 34%; }
+  .dm-bar-val { width: 62px; }
+  .dm-dims { min-width: 150px; }
+}

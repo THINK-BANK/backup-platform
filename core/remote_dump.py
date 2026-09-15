@@ -627,6 +627,12 @@ def transfer_params(task: dict) -> dict:
         "resume": bool(resume),
         "resume_ttl": _int(getattr(config, "BACKUP_RESUME_TTL", 43200), default=43200),
         "rate_kbps": _int(task.get("bandwidth_limit"), default=0),
+        "stable_secs": _int(extra.get("stable_secs"),
+                            getattr(config, "BACKUP_STABLE_SECS", 20), default=20),
+        "keep_remote_done": str(
+            extra.get("keep_remote_done",
+                      getattr(config, "BACKUP_REMOTE_KEEP_DONE", True))
+        ).lower() in ("1", "true", "yes", "on"),
     }
 
 
@@ -1406,10 +1412,17 @@ def _remote_stage_dir() -> str:
     return getattr(config, "BACKUP_REMOTE_STAGE", "/tmp/bk_stage")
 
 
-def _resume_part_path(final_path: str, task: dict, db_type: str) -> str:
-    """本地半成品路径：**与时间戳无关**，否则重试换了产物名就命中不了断点。"""
+def _resume_part_path(final_path: str, task: dict, db_type: str, key: str = "") -> str:
+    """本地半成品路径：**与时间戳无关**，否则重试换了产物名就命中不了断点。
+
+    key: 同一任务可能有多份产物（RMAN 多个备份片 / PG 多个 tar / 脚本产物多文件），
+         用 key 区分，避免互相覆盖断点。
+    """
     d = os.path.dirname(final_path) or "."
-    return os.path.join(d, f".resume_t{int(task.get('id') or 0)}_{db_type}.part")
+    suffix = ""
+    if key:
+        suffix = "_" + re.sub(r"[^0-9A-Za-z._-]", "_", str(key))[:60]
+    return os.path.join(d, f".resume_t{int(task.get('id') or 0)}_{db_type}{suffix}.part")
 
 
 def _meta_read(part_path: str) -> dict:
@@ -1534,12 +1547,26 @@ def _start_remote_dump(client, sftp, spec: dict, stage: str, sh_path: str,
 
 def _sftp_pull_incremental(sftp, remote_path: str, rc_path: str, local_path: str,
                            meta: dict, p: dict, label: str = "",
-                           rate_kbps: int = 0) -> int:
+                           rate_kbps: int = 0, has_rc: bool = True,
+                           stable_secs: float = None) -> int:
     """按 offset 增量拉取远端文件：边导出边传，中断后从断点继续。
+
+    has_rc: 远端是否有「完成标记」（rc 文件）。逻辑备份产物由 dump 脚本写 rc；
+            **固定产物**（xtrabackup / pg_basebackup / tar 流 / expdp .dmp /
+            SQL Server .bak 等）没有 rc，改由 stable_secs 判定写盘结束。
+    stable_secs: 固定产物专用——远端文件连续 N 秒不再增长即认为写完。
+                 默认取任务级 stable_secs（config.BACKUP_STABLE_SECS，20s）。
 
     返回已拉取的总字节数（含断点前已有的部分）。
     """
     import time as _t
+    has_rc = bool(has_rc and rc_path)
+    try:
+        stable_secs = float(stable_secs if stable_secs is not None
+                            else (p.get("stable_secs") or 20))
+    except (TypeError, ValueError):
+        stable_secs = 20.0
+    _stable_since = None
     offset = int(meta.get("offset") or 0)
     if os.path.exists(local_path):
         try:
@@ -1559,13 +1586,17 @@ def _sftp_pull_incremental(sftp, remote_path: str, rc_path: str, local_path: str
             rf = sftp.open(remote_path, "rb")
             break
         except (IOError, OSError):
-            _ready0, _rc0 = _remote_rc_ready(sftp, rc_path)
-            if _ready0:
+            if has_rc:
+                _ready0, _rc0 = _remote_rc_ready(sftp, rc_path)
+                if _ready0:
+                    raise RuntimeError(
+                        f"远端导出已结束(rc={_rc0})但产物文件不存在，无法续传")
+                _wait_limit = 60
+            else:
+                _wait_limit = 300          # 固定文件：物理备份可能仍在补齐
+            if _t.time() - _wait_start > _wait_limit:
                 raise RuntimeError(
-                    f"远端导出已结束(rc={_rc0})但产物文件不存在，无法续传")
-            if _t.time() - _wait_start > 60:
-                raise RuntimeError(
-                    f"等待远端产物生成超时（60s）：{remote_path}")
+                    f"等待远端产物生成超时（{_wait_limit}s）：{remote_path}")
             _t.sleep(0.5)
     try:
         # paramiko 默认单请求 32KB，大文件下请求往返成为瓶颈 → 调大到 512KB
@@ -1626,18 +1657,33 @@ def _sftp_pull_incremental(sftp, remote_path: str, rc_path: str, local_path: str
                     lf.flush()
                     meta["offset"] = offset
                     _meta_write(local_path, meta)
-                ready, rc = _remote_rc_ready(sftp, rc_path)
-                if ready:
-                    if rc != 0:
-                        break
+                now = _t.time()
+                if has_rc:
+                    ready, rc = _remote_rc_ready(sftp, rc_path)
+                    if ready:
+                        if rc != 0:
+                            break
+                        try:
+                            rsize2 = int(sftp.stat(remote_path).st_size)
+                        except (IOError, OSError):
+                            rsize2 = offset
+                        if offset >= rsize2:
+                            break
+                        continue
+                else:
+                    # 固定文件（物理备份产物 / expdp dmp / .bak 等）：已读满且
+                    # 连续 stable_secs 秒不再增长 → 认为远端写盘结束
                     try:
                         rsize2 = int(sftp.stat(remote_path).st_size)
                     except (IOError, OSError):
                         rsize2 = offset
                     if offset >= rsize2:
-                        break
-                    continue
-                now = _t.time()
+                        if _stable_since is None:
+                            _stable_since = now
+                        elif (now - _stable_since) >= stable_secs:
+                            break
+                    else:
+                        _stable_since = None
                 if p.get("cmd_timeout") and (now - start) > float(p["cmd_timeout"]):
                     raise RuntimeError(
                         f"备份传输超时（{p['cmd_timeout']}s，已传 {db.human_size(offset)}），"
@@ -1657,6 +1703,280 @@ def _sftp_pull_incremental(sftp, remote_path: str, rc_path: str, local_path: str
         except Exception:
             pass
     return offset
+
+
+# --------------------------------------------------------------------------- #
+# 固定产物续传：物理备份 tar 流 / Oracle Data Pump .dmp / SQL Server .bak /
+#              达梦备份集 tar / 自定义脚本产物 / 文件备份归档
+#
+# 与逻辑备份（mysqldump 等）的差别只有两点：
+#   1) **不产生 rc 标记文件** → 改用「远端文件连续 stable_secs 秒不再增长」判定
+#      写盘结束（通道层 _sftp_pull_incremental 已支持该分支）；
+#   2) 产物生成代价极高（xtrabackup 可能跑数小时）→ 拉回中断时**绝不能重跑备份**。
+#      因此远端路径对同一任务**确定性**，且备份成功后写 `.bkdone` 完成标记；
+#      重试时先探测标记，命中则跳过备份执行，直接从断点续传拉回。
+# --------------------------------------------------------------------------- #
+
+def _remote_fixed_dir() -> str:
+    """固定产物的远端目录（与逻辑备份暂存分开，便于排查与清理）。"""
+    return _remote_stage_dir().rstrip("/") + "/fixed"
+
+
+def fixed_remote_path(task: dict, db_type: str, name: str) -> str:
+    """固定产物的确定性远端路径（**不含随机时间戳**）。"""
+    tid = int(task.get("id") or 0)
+    safe = re.sub(r"[^0-9A-Za-z._-]", "_", str(name or "artifact"))[:80]
+    return f"{_remote_fixed_dir()}/t{tid}_{db_type}_{safe}"
+
+
+def marker_path(target: str, is_dir: bool = False) -> str:
+    """完成标记路径：文件 → `<path>.bkdone`；目录 → `<dir>/.bkdone`。"""
+    t = str(target or "").rstrip("/")
+    return f"{t}/.bkdone" if is_dir else f"{t}.bkdone"
+
+
+def remote_artifact_ready(client, target: str, is_dir: bool = False,
+                          min_size: int = 0) -> dict:
+    """探测远端固定产物能否直接复用（跳过重跑备份）。
+
+    返回 {exists, size, done, reusable}：
+      exists   产物存在且有内容
+      done     存在完成标记（上次备份已跑完）
+      reusable exists and done and size >= min_size
+    """
+    out = {"exists": False, "size": 0, "done": False, "reusable": False}
+    sftp = None
+    try:
+        sftp = client.open_sftp()
+        try:
+            if is_dir:
+                sizes = [int(a.st_size or 0) for a in sftp.listdir_attr(target)
+                         if not a.filename.startswith(".")]
+                out["size"] = sum(sizes)
+                out["exists"] = bool(sizes)
+            else:
+                out["size"] = int(sftp.stat(target).st_size or 0)
+                out["exists"] = out["size"] > 0
+        except (IOError, OSError):
+            out["exists"] = False
+        try:
+            out["done"] = int(sftp.stat(marker_path(target, is_dir)).st_size or 0) > 0
+        except (IOError, OSError):
+            out["done"] = False
+        out["reusable"] = bool(out["exists"] and out["done"]
+                               and out["size"] >= int(min_size or 0))
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "[remote_dump] 探测远端产物失败(%s): %s", target, e)
+    finally:
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+    return out
+
+
+def mark_remote_artifact_done(client, target: str, is_dir: bool = False,
+                              size: int = -1, note: str = "") -> None:
+    """写远端完成标记（等价于逻辑备份的 rc 文件），供重试时判定可复用。"""
+    sftp = None
+    try:
+        sftp = client.open_sftp()
+        with sftp.open(marker_path(target, is_dir), "w") as f:
+            f.write(f"size={int(size)}\n{note}\n")
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "[remote_dump] 写完成标记失败(%s): %s", target, e)
+    finally:
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+
+
+def _sftp_rmtree(sftp, path: str) -> None:
+    """递归删除远端目录（best-effort；远端不留任何平台产物）。"""
+    try:
+        attrs = sftp.listdir_attr(path)
+    except Exception:
+        attrs = None
+    if attrs is None:
+        try:
+            sftp.remove(path)
+        except Exception:
+            pass
+        return
+    for a in attrs:
+        child = f"{path.rstrip('/')}/{a.filename}"
+        try:
+            import stat as _stat
+            if _stat.S_ISDIR(a.st_mode or 0):
+                _sftp_rmtree(sftp, child)
+            else:
+                sftp.remove(child)
+        except Exception:
+            pass
+    try:
+        sftp.rmdir(path)
+    except Exception:
+        pass
+
+
+def cleanup_remote_artifacts(client, targets, dirs=()) -> None:
+    """清理远端固定产物与完成标记（成功拉回后调用；best-effort）。
+
+    设计约束（用户硬性要求）：绝不把备份工具/产物留在数据库服务器上。
+    """
+    sftp = None
+    try:
+        sftp = client.open_sftp()
+        for t in (targets or []):
+            for p in (str(t), marker_path(str(t))):
+                try:
+                    sftp.remove(p)
+                except Exception:
+                    pass
+        for d in (dirs or []):
+            d = str(d).rstrip("/")
+            try:
+                sftp.remove(marker_path(d, True))
+            except Exception:
+                pass
+            _sftp_rmtree(sftp, d)
+    except Exception:
+        pass
+    finally:
+        if sftp is not None:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+
+
+def _meta_usable_fixed(meta: dict, remote_path: str, host_key: str, p: dict) -> bool:
+    """固定产物断点是否可续用：同一远端产物 + 同一主机 + 未过期。
+
+    注意与逻辑备份的 _meta_usable 不同——固定产物没有压缩/后缀参数，判定依据是
+    「远端路径完全一致」，因为它是确定性路径且代表同一份产物。
+    """
+    if not meta.get("remote_path") or meta.get("remote_path") != remote_path:
+        return False
+    if host_key and (meta.get("host") or "") != host_key:
+        return False
+    try:
+        age = time.time() - float(meta.get("started_at") or 0)
+    except (TypeError, ValueError):
+        age = 0
+    return age <= float(p.get("resume_ttl") or 43200)
+
+
+def sftp_pull_resumable(client, remote_path: str, local_path: str, *,
+                        task: dict, key: str = "", db_type: str = "fixed",
+                        host_key: str = "", has_rc: bool = False,
+                        rc_path: str = "", stable_secs: float = None,
+                        label: str = "", min_size: int = 0) -> dict:
+    """固定产物的断点续传拉回（中断后从已传字节继续，**不重跑备份**）。
+
+    has_rc=True 时按 rc 标记判定结束（逻辑备份形态），否则按 stable_secs 判定。
+
+    返回 dict(path, size, sha256, resumed)。
+    """
+    p = transfer_params(task)
+    resume = bool(p.get("resume"))
+    os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+    part_path = _resume_part_path(local_path, task, db_type, key=key)
+    meta = _meta_read(part_path) if resume else {}
+    resumed = False
+    log = logging.getLogger(__name__)
+    if meta and _meta_usable_fixed(meta, remote_path, host_key, p):
+        resumed = True
+        log.info("[remote_dump] 固定产物命中断点续传: %s 本地已传 %s",
+                 remote_path, db.human_size(int(meta.get("offset") or 0)))
+        try:
+            from core import oplog
+            op = oplog.current()
+            if op:
+                op.info("命中断点续传：从 %s 处继续拉取（%s）",
+                        db.human_size(int(meta.get("offset") or 0)),
+                        label or os.path.basename(remote_path))
+        except Exception:
+            pass
+    else:
+        _meta_drop(part_path)
+        meta = {
+            "task_id": int(task.get("id") or 0),
+            "host": host_key,
+            "remote_path": remote_path,
+            "kind": db_type,
+            "started_at": time.time(),
+            "offset": 0,
+        }
+        _meta_write(part_path, meta)
+
+    sftp = client.open_sftp()
+    try:
+        try:
+            sftp.stat(remote_path)
+        except (IOError, OSError):
+            raise RuntimeError(f"远端产物不存在，无法拉取：{remote_path}")
+        _sftp_pull_incremental(
+            sftp, remote_path, rc_path, part_path, meta, p,
+            label=label or db_type, rate_kbps=int(p.get("rate_kbps") or 0),
+            has_rc=bool(has_rc), stable_secs=stable_secs)
+    finally:
+        try:
+            sftp.close()
+        except Exception:
+            pass
+
+    size = os.path.getsize(part_path) if os.path.exists(part_path) else 0
+    if min_size and size < int(min_size):
+        raise RuntimeError(
+            f"拉回产物过小（{size} < {min_size} 字节），疑似远端写入不完整；"
+            f"断点已保留，重试将自动续传")
+    os.replace(part_path, local_path)
+    _meta_drop(part_path)
+    log.info("[remote_dump] 固定产物已拉回: %s (%s)%s", local_path,
+             db.human_size(size), "（续传）" if resumed else "")
+    return {"path": local_path, "size": size,
+            "sha256": db.sha256_file(local_path), "resumed": resumed}
+
+
+def sftp_pull_dir_resumable(client, remote_dir: str, out_dir: str, *,
+                            task: dict, db_type: str = "fixed_phys",
+                            host_key: str = "", patterns=(), label: str = "",
+                            min_size: int = 0) -> list:
+    """目录形态固定产物（pg_basebackup 多份 tar / 自定义脚本多文件）逐文件续传拉回。
+
+    返回 [(local_path, size, resumed), ...]。
+    """
+    sftp = client.open_sftp()
+    try:
+        names = []
+        for attr in sftp.listdir_attr(remote_dir):
+            fn = attr.filename
+            if fn.startswith(".") or int(attr.st_size or 0) <= 0:
+                continue
+            if patterns and not str(fn).endswith(tuple(patterns)):
+                continue
+            names.append(fn)
+    finally:
+        try:
+            sftp.close()
+        except Exception:
+            pass
+    os.makedirs(out_dir, exist_ok=True)
+    out = []
+    for fn in sorted(names):
+        rp = f"{remote_dir}/{fn}"
+        lp = os.path.join(out_dir, fn)
+        res = sftp_pull_resumable(
+            client, rp, lp, task=task, key=fn, db_type=db_type,
+            host_key=host_key, label=f"{label or db_type}:{fn}", min_size=min_size)
+        out.append((res["path"], res["size"], res["resumed"]))
+    return out
 
 
 def _remote_mysql_dump_to_file(task: dict, ssh_host: dict, final_path: str,
@@ -1893,11 +2213,20 @@ def remote_physical_backup(task: dict, ssh_host: dict, *, tool: str,
     db_host = task.get("host") or "127.0.0.1"
     db_host = "127.0.0.1" if (ssh_ip and ssh_ip == str(db_host)) else str(db_host)
 
-    # 临时目录用时间戳避免冲突，且回退前先清理
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    remote_tmp = f"/tmp/{tool}_bkp_{ts}"
-    prep = f"rm -rf {remote_tmp} && mkdir -p {remote_tmp}"
-    _ssh_exec_pipe(client, _wrap_login(prep), timeout=60)
+    # 固定产物形态：远端目录**确定性**（不含随机时间戳）+ 完成标记。
+    # 拉回中断时重试可直接复用远端产物并断点续传拉回，不必重跑一遍 basebackup
+    # （pg_basebackup 对 TB 级实例可能跑数小时）。
+    remote_tmp = fixed_remote_path(task, f"{tool}_phys", "d")
+    _log = logging.getLogger(__name__)
+    ready = remote_artifact_ready(client, remote_tmp, is_dir=True, min_size=1)
+    reuse = bool(ready["reusable"])
+    if reuse:
+        _log.info("[remote_dump] 复用远端已完成 %s 产物 %s（%s），跳过备份执行",
+                  tool, remote_tmp, db.human_size(ready["size"]))
+    else:
+        # pg_basebackup -D 要求目标目录为空；重试时先清掉上次残留
+        prep = f"rm -rf {remote_tmp} && mkdir -p {remote_tmp}"
+        _ssh_exec_pipe(client, _wrap_login(prep), timeout=60)
 
     # extra_options 透传额外参数（如 --verbose、--exclude）
     extra = []
@@ -1920,20 +2249,26 @@ def remote_physical_backup(task: dict, ssh_host: dict, *, tool: str,
         env_extra = "".join(
             f" export {k}={shlex.quote(str(v))};" for k, v in extra_env.items())
     flags = " ".join(shlex.quote(a) for a in (base_flags or _PG_BASEBACKUP_FLAGS))
-    inner = (
-        f"export PGPASSWORD={shlex.quote(pw)}; "
-        f"export KINGBASE_PASSWORD={shlex.quote(pw)};"
-        f"{env_extra} "
-        f"{resolved} -h {shlex.quote(db_host)} -p {port} -U {shlex.quote(user)} "
-        f"-D {remote_tmp} {flags}"
-    )
-    if extra:
-        inner += " " + " ".join(shlex.quote(a) for a in extra)
-    wrapped = _wrap_login(inner)
-    start = time.time()
-    out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=7200)
-    duration = round(time.time() - start, 3)
-    out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
+    if reuse:
+        # 产物已在远端且标记为完成 → 本次只需拉回，跳过 basebackup 执行
+        rc, err, duration = 0, "", 0.0
+        out_text = (f"复用远端已完成产物 {remote_tmp}"
+                    f"（{db.human_size(ready['size'])}），跳过备份执行")
+    else:
+        inner = (
+            f"export PGPASSWORD={shlex.quote(pw)}; "
+            f"export KINGBASE_PASSWORD={shlex.quote(pw)};"
+            f"{env_extra} "
+            f"{resolved} -h {shlex.quote(db_host)} -p {port} -U {shlex.quote(user)} "
+            f"-D {remote_tmp} {flags}"
+        )
+        if extra:
+            inner += " " + " ".join(shlex.quote(a) for a in extra)
+        wrapped = _wrap_login(inner)
+        start = time.time()
+        out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=7200)
+        duration = round(time.time() - start, 3)
+        out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
 
     if rc != 0:
         snippet = (out_text or err)[-1200:]
@@ -1950,32 +2285,65 @@ def remote_physical_backup(task: dict, ssh_host: dict, *, tool: str,
             "remote_dir": "",
             "message": f"远端 {tool_label} 物理备份失败(rc={rc}): {snippet}{hint}",
         }
+
+    # 写远端完成标记：下一次重试据此复用产物，**不重跑 basebackup**
+    if not reuse:
+        try:
+            done_size = remote_artifact_ready(client, remote_tmp, is_dir=True)["size"]
+        except Exception:  # noqa: BLE001
+            done_size = -1
+        mark_remote_artifact_done(client, remote_tmp, is_dir=True,
+                                  size=done_size, note=f"{tool} {hk}")
     return {
         "ok": True, "rc": 0, "stdout": out_text, "stderr": err,
-        "remote_dir": remote_tmp,
-        "message": f"远端 {tool_label} 物理备份执行成功(rc=0)，产物在 {remote_tmp}",
+        "remote_dir": remote_tmp, "reused": reuse,
+        "message": (f"远端 {tool_label} 物理备份"
+                    f"{'复用上次产物（未重跑备份）' if reuse else '执行成功(rc=0)'}"
+                    f"，产物在 {remote_tmp}"),
     }
 
 
-def _pull_remote_tars(client, remote_dir: str, out_dir: str) -> list:
-    """从远端目录拉取 *.tar[.gz] 到本地 out_dir，返回 [(local_path, size)]。"""
+def _pull_remote_tars(client, remote_dir: str, out_dir: str, *,
+                      task: dict = None, host_key: str = "",
+                      db_type: str = "pg_phys") -> list:
+    """从远端目录拉取 *.tar[.gz] 到本地 out_dir，返回 [(local_path, size)]。
+
+    传入 task 时**逐文件断点续传**（pg_basebackup 会产出 base.tar.gz + 若干 WAL tar，
+    大实例单包可能数十 GB，断链后不该从头再传）；未传 task 时退回整文件 sftp.get，
+    保持对既有调用方的兼容。
+    """
     os.makedirs(out_dir, exist_ok=True)
     sftp = client.open_sftp()
     try:
-        pieces = []
-        for attr in sftp.listdir_attr(remote_dir):
-            fname = attr.filename
-            if fname.endswith((".tar.gz", ".tar")):
-                remote_path = f"{remote_dir}/{fname}"
-                local_path = os.path.join(out_dir, fname)
-                sftp.get(remote_path, local_path)
-                pieces.append((local_path, attr.st_size))
-        return pieces
+        names = sorted(a.filename for a in sftp.listdir_attr(remote_dir)
+                       if a.filename.endswith((".tar.gz", ".tar")))
     finally:
         try:
             sftp.close()
         except Exception:
             pass
+
+    pieces = []
+    for fname in names:
+        remote_path = f"{remote_dir}/{fname}"
+        local_path = os.path.join(out_dir, fname)
+        if task:
+            res = sftp_pull_resumable(
+                client, remote_path, local_path, task=task, key=fname,
+                db_type=db_type, host_key=host_key, has_rc=False,
+                stable_secs=3, label=fname, min_size=1)
+        else:
+            sftp2 = client.open_sftp()
+            try:
+                sftp2.get(remote_path, local_path)
+            finally:
+                try:
+                    sftp2.close()
+                except Exception:
+                    pass
+            res = {"path": local_path, "size": os.path.getsize(local_path)}
+        pieces.append((res["path"], res["size"]))
+    return pieces
 
 
 # ----------------------------- 远程 LIST DATABASES -----------------------------

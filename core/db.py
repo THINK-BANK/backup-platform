@@ -678,6 +678,27 @@ CREATE TABLE IF NOT EXISTS anonymized_exports (
     created_at        TEXT
 );
 
+-- 敏感数据扫描结果（数据价值挖掘：发现与分级）
+-- 设计约束：本表**只存脱敏样例与统计值，绝不落原始敏感值**。
+CREATE TABLE IF NOT EXISTS data_scan_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         INTEGER,                            -- → backup_tasks.id（可空）
+    record_id       INTEGER,                            -- → backup_records.id（可空）
+    path            TEXT,                               -- 被扫描的备份产物路径
+    size_bytes      INTEGER DEFAULT 0,
+    scanned_chars   INTEGER DEFAULT 0,
+    max_level       INTEGER DEFAULT 0,                  -- 1~4（GB/T 43697-2024 分级）
+    risk_score      INTEGER DEFAULT 0,                  -- 0~100
+    hit_count       INTEGER DEFAULT 0,                  -- 命中的敏感值总数
+    findings        TEXT,                               -- JSON: 按类型聚合（仅脱敏样例）
+    scannable       INTEGER DEFAULT 1,                  -- 0=不可扫（二进制/文件缺失）
+    reason          TEXT,
+    scanned_at      TEXT,
+    scanned_by      TEXT                                -- 操作人
+);
+CREATE INDEX IF NOT EXISTS idx_dsr_task ON data_scan_results(task_id, scanned_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dsr_record ON data_scan_results(record_id);
+
 -- ========== 准 CDP 实时备份（Phase RT）==========
 
 -- ③ 实时备份任务扩展（与 backup_tasks 1:1 关联）

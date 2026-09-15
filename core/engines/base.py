@@ -1338,11 +1338,25 @@ class BackupEngine:
             os.makedirs(out_dir, exist_ok=True)
             local_files = []
             total = 0
+            resumed_any = False
             for fname, fsize in artifacts:
                 local_path = os.path.join(out_dir, fname)
-                sftp.get(f"{artifact_dir}/{fname}", local_path)
-                local_files.append((local_path, os.path.getsize(local_path)))
-                total += os.path.getsize(local_path)
+                # 断点续传拉回：网络/隧道断开后重试从已传字节继续，脚本无需重跑
+                try:
+                    _r = remote_dump.sftp_pull_resumable(
+                        client, f"{artifact_dir}/{fname}", local_path,
+                        task=self.task, key=fname,
+                        db_type=f"{self.db_type}_custom",
+                        host_key=(ssh_host or {}).get("host_key", ""),
+                        has_rc=False, stable_secs=3,
+                        label=fname, min_size=1)
+                    _lp, _sz = _r["path"], _r["size"]
+                    resumed_any = resumed_any or bool(_r.get("resumed"))
+                except Exception:
+                    sftp.get(f"{artifact_dir}/{fname}", local_path)
+                    _lp, _sz = local_path, os.path.getsize(local_path)
+                local_files.append((_lp, _sz))
+                total += _sz
             local_files.sort(key=lambda x: -x[1])
             primary = local_files[0][0]
             checksum = db.sha256_file(primary)

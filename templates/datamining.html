@@ -1,98 +1,363 @@
+{% set active_page = "datamining" %}
 {% extends "base.html" %}
+
+{% block title %}数据价值挖掘{% endblock %}
+
 {% block content %}
+<div class="page-title">数据价值挖掘</div>
+<div class="page-sub">
+  把冷备份变成可治理、可评估、可合规举证的数据资产：
+  <b>资产盘点</b> → <b>敏感发现与分级</b> → <b>价值评估与治理</b> → <b>合规概览</b> → <b>脱敏外发</b>
+</div>
+
 <div class="toolbar">
-  <div>
-    <div class="page-title">数据价值挖掘</div>
-    <div class="page-sub">将备份数据脱敏后导出供分析，让「冷备份」转化为「可审计、可用的数据资产」</div>
-  </div>
-  <button class="btn btn-outline-secondary btn-sm" onclick="loadExports()" title="刷新"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+  <select class="form-select form-select-sm" id="dmDays" style="width:auto">
+    <option value="7">近 7 天</option>
+    <option value="30" selected>近 30 天</option>
+    <option value="90">近 90 天</option>
+    <option value="365">近 1 年</option>
+  </select>
+  <button class="btn btn-outline-secondary btn-sm" id="dmRefresh">
+    <i class="bi bi-arrow-clockwise"></i> 重新盘点
+  </button>
+  <div class="ms-auto small text-secondary" id="dmUpdated"></div>
 </div>
 
-<div class="page-card">
-  <div class="card-section-title"><i class="bi bi-shield-lock"></i> 脱敏导出</div>
+<ul class="nav nav-tabs bk-tabs mb-3" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#dmInventory" type="button">资产盘点</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#dmSensitive" type="button">敏感发现与分级</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#dmValue" type="button">价值评估与治理</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#dmCompliance" type="button">合规概览</button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#dmExport" type="button">脱敏导出</button>
+  </li>
+</ul>
 
-  <div class="row g-3">
-    <div class="col-md-6">
-      <label class="form-label">来源备份记录 <span class="text-danger">*</span></label>
-      <select class="form-select" id="dmSource">
-        <option value="">— 请选择备份记录 —</option>
-      </select>
-      <div class="form-text">
-        选择后系统按该记录类型（<span id="dmSchemaLabel">通用</span>）推荐典型列集合。
+<div class="tab-content">
+  <!-- ============ Tab 1: 资产盘点 ============ -->
+  <div class="tab-pane fade show active" id="dmInventory">
+    <div class="row g-3" id="dmKpiRow"></div>
+
+    <div class="row g-3 mt-1">
+      <div class="col-12 col-xl-8">
+        <div class="page-card">
+          <div class="card-section-title">备份量增长趋势</div>
+          <div id="dmTrend" class="dm-chart"></div>
+        </div>
+      </div>
+      <div class="col-12 col-xl-4">
+        <div class="page-card">
+          <div class="card-section-title">冷热分层分布</div>
+          <div id="dmColdDist"></div>
+          <hr class="my-3">
+          <div class="card-section-title">存储层级占用</div>
+          <div id="dmTierDist"></div>
+        </div>
       </div>
     </div>
-    <div class="col-md-6">
-      <label class="form-label">目标表（可选）</label>
-      <select class="form-select" id="dmTable" disabled>
-        <option value="">请先选择来源记录</option>
-      </select>
-      <div class="form-text">选择表后自动带入该表全部列；可手动增删。</div>
+
+    <div class="row g-3 mt-1">
+      <div class="col-12 col-xl-4">
+        <div class="page-card">
+          <div class="card-section-title">按数据库类型</div>
+          <div id="dmTypeDist"></div>
+        </div>
+      </div>
+      <div class="col-12 col-xl-8">
+        <div class="page-card">
+          <div class="card-section-title">实例资产分布（Top 10）</div>
+          <div id="dmInstanceDist"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-card mt-3">
+      <div class="card-section-title">
+        资产清单
+        <input class="form-control form-control-sm dm-search" id="dmAssetSearch"
+               placeholder="搜索资产 / 实例 / 业务系统…" style="width:240px">
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr>
+              <th>资产名称</th><th>类型</th><th>实例</th><th class="text-end">容量</th>
+              <th class="text-end">批次</th><th>最近成功</th>
+              <th class="text-end">价值分</th><th>冷热</th><th>敏感</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="dmAssetTable"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
-  <div class="row g-3 mt-1">
-    <div class="col-md-6">
-      <label class="form-label">导出列（可多选）</label>
-      <select class="form-select" id="dmColumns" multiple size="6"></select>
-      <div class="d-flex gap-2 mt-2">
-        <button class="btn btn-outline-secondary btn-sm" type="button" id="dmAddColumn">+ 添加自定义列</button>
-        <button class="btn btn-outline-secondary btn-sm" type="button" id="dmSelectAll">全选</button>
-        <button class="btn btn-outline-secondary btn-sm" type="button" id="dmClearColumns">清空</button>
+  <!-- ============ Tab 2: 敏感发现与分级 ============ -->
+  <div class="tab-pane fade" id="dmSensitive">
+    <div class="row g-3">
+      <div class="col-12 col-xl-7">
+        <div class="page-card">
+          <div class="card-section-title">识别能力清单（14 类 · 内容级识别 + 校验算法）</div>
+          <div class="small text-secondary mb-2">
+            依据 <b>GB/T 43697-2024</b> 数据分类分级规则，对一般数据按敏感程度细化为
+            <span class="dm-lv dm-lv-1">L1 公开</span>
+            <span class="dm-lv dm-lv-2">L2 内部</span>
+            <span class="dm-lv dm-lv-3">L3 敏感</span>
+            <span class="dm-lv dm-lv-4">L4 重要</span>
+            四个等级。带「校验」的类型使用国标校验位 / Luhn / 号段算法二次确认，误报率远低于纯列名匹配。
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>类别</th><th>分级</th><th>分类</th><th>合规标签</th><th>算法</th><th>建议脱敏</th></tr></thead>
+              <tbody id="dmSensorTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-xl-5">
+        <div class="page-card">
+          <div class="card-section-title">在线试扫（不落库）</div>
+          <div class="small text-secondary mb-2">粘贴一段真实或仿制的 SQL / JSON / 日志片段，即时验证识别效果。</div>
+          <textarea class="form-control form-control-sm" id="dmTrialText" rows="6"
+            placeholder="INSERT INTO t_users(id,name,phone,id_card,email) VALUES (1,'张三','13812341234','110101199003074872','zhangsan@example.com');"></textarea>
+          <div class="mt-2 d-flex gap-2">
+            <button class="btn btn-primary btn-sm" id="dmTrialBtn"><i class="bi bi-search"></i> 试扫</button>
+            <span class="small text-secondary align-self-center">结果仅返回脱敏样例，不保留原始值</span>
+          </div>
+          <div id="dmTrialResult" class="mt-3"></div>
+        </div>
+
+        <div class="page-card mt-3">
+          <div class="card-section-title">扫描备份产物</div>
+          <div class="row g-2">
+            <div class="col-7">
+              <select class="form-select form-select-sm" id="dmScanTask">
+                <option value="">选择资产（备份任务）…</option>
+              </select>
+            </div>
+            <div class="col-5">
+              <select class="form-select form-select-sm" id="dmScanLimit">
+                <option value="1">最近 1 份产物</option>
+                <option value="3" selected>最近 3 份产物</option>
+                <option value="5">最近 5 份产物</option>
+              </select>
+            </div>
+          </div>
+          <div class="mt-2 d-flex gap-2">
+            <button class="btn btn-primary btn-sm" id="dmScanBtn"><i class="bi bi-shield-check"></i> 执行敏感发现</button>
+            <button class="btn btn-outline-secondary btn-sm" id="dmScanAllBtn">扫描全部未覆盖资产</button>
+          </div>
+          <div id="dmScanResult" class="mt-3"></div>
+        </div>
       </div>
     </div>
-    <div class="col-md-6">
-      <label class="form-label">脱敏规则模板</label>
-      <div class="btn-group" role="group" id="dmRuleTemplates">
-        <button type="button" class="btn btn-outline-primary btn-sm" data-tpl="minimal">最小</button>
-        <button type="button" class="btn btn-outline-primary btn-sm" data-tpl="standard">标准</button>
-        <button type="button" class="btn btn-outline-primary btn-sm active" data-tpl="strict">严格</button>
-      </div>
-      <div class="form-text" id="dmTplDesc">严格（默认）：所有可能含个人信息列均脱敏；IP/Token 哈希不可逆。</div>
-      <div class="mt-2">
-        <label class="form-label">行数</label>
-        <input type="number" id="dmRowCount" class="form-control" value="50" min="1" max="2000">
+
+    <div class="page-card mt-3">
+      <div class="card-section-title">扫描历史</div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead><tr><th>时间</th><th>资产</th><th>产物</th><th class="text-end">大小</th><th>最高等级</th><th class="text-end">风险分</th><th class="text-end">命中</th><th>操作</th></tr></thead>
+          <tbody id="dmScanHistory"></tbody>
+        </table>
       </div>
     </div>
   </div>
 
-  <div class="mt-3">
-    <label class="form-label">规则预览（每列最终脱敏含义）</label>
-    <div id="dmRulePreview" class="border rounded p-2 small bg-light">
-      请先选择来源记录与导出列…
+  <!-- ============ Tab 3: 价值评估与治理 ============ -->
+  <div class="tab-pane fade" id="dmValue">
+    <div class="row g-3">
+      <div class="col-12 col-xl-4">
+        <div class="page-card">
+          <div class="card-section-title">价值分布</div>
+          <div id="dmGradeDist"></div>
+          <hr class="my-3">
+          <div class="card-section-title">评分模型</div>
+          <div class="small text-secondary">
+            价值分 0~100，由六个维度加权：
+            <ul class="mt-2 mb-0">
+              <li>活跃度 25（近周期备份批次 / 增量链路 / 实时保护）</li>
+              <li>保护完备 20（定时 / 启用 / 保留策略 / 成功率 / 校验率）</li>
+              <li>规模 15、可恢复性 15、业务辐射 15、合规敏感度 10</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-xl-8">
+        <div class="page-card">
+          <div class="card-section-title">可执行治理建议</div>
+          <div id="dmGovernance"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page-card mt-3">
+      <div class="card-section-title">资产价值明细</div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>资产</th><th class="text-end">价值分</th><th>维度构成</th><th>冷热</th><th class="text-end">闲置天数</th><th class="text-end">容量</th><th>处置建议</th></tr>
+          </thead>
+          <tbody id="dmValueTable"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 
-  <div class="mt-3">
-    <label class="form-label">脱敏规则（JSON 高级编辑）</label>
-    <textarea class="form-control font-monospace" id="dmMaskRules" rows="3"
-              placeholder='{"phone":"mask","email":"mask","name":"fake"}'>{}</textarea>
-    <div class="form-text">
-      默认按 PII 自动识别；在「规则预览」或这里直接调整即可。
-      <code>mask</code>=部分打码（138****1234）·<code>hash</code>=不可逆哈希 ·
-      <code>drop</code>=删除列 · <code>fake</code>=仿真替换 · <code>none</code>=不脱敏。
+  <!-- ============ Tab 4: 合规概览 ============ -->
+  <div class="tab-pane fade" id="dmCompliance">
+    <div class="row g-3">
+      <div class="col-12 col-xl-4">
+        <div class="page-card text-center">
+          <div class="card-section-title" style="justify-content:center">合规健康度</div>
+          <div class="dm-ring" id="dmCompRing"><span id="dmCompScore">–</span></div>
+          <div class="mt-2"><span class="dm-grade" id="dmCompGrade">–</span></div>
+          <div class="small text-secondary mt-2">
+            仅计入<b>已识别覆盖</b>的检查项；未扫描的资产不会被默认为合规。
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-xl-8">
+        <div class="page-card">
+          <div class="card-section-title">检查项 (PIPL / GB/T 35273 / PCI-DSS / 等保 2.0)</div>
+          <div id="dmCompChecks"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mt-1">
+      <div class="col-12 col-xl-7">
+        <div class="page-card">
+          <div class="card-section-title">敏感资产清单（L3 及以上）</div>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead><tr><th>资产</th><th>类型</th><th>等级</th><th class="text-end">风险分</th><th>保护</th><th>演练</th><th class="text-end">容量</th></tr></thead>
+              <tbody id="dmSensTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-xl-5">
+        <div class="page-card">
+          <div class="card-section-title">超保留期留存</div>
+          <div id="dmOverdue"></div>
+          <hr class="my-3">
+          <div class="card-section-title">宽松导出告警</div>
+          <div id="dmLoose"></div>
+        </div>
+      </div>
     </div>
   </div>
 
-  <div class="mt-3">
-    <button class="btn btn-primary" id="dmExportBtn"><i class="bi bi-download"></i> 生成脱敏导出</button>
+  <!-- ============ Tab 5: 脱敏导出（让冷备份转为可用资产） ============ -->
+  <div class="tab-pane fade" id="dmExport">
+    <div class="page-card">
+      <div class="card-section-title"><i class="bi bi-shield-lock"></i> 脱敏导出</div>
+
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label">来源备份记录 <span class="text-danger">*</span></label>
+          <select class="form-select" id="dmSource">
+            <option value="">— 请选择备份记录 —</option>
+          </select>
+          <div class="form-text">
+            选择后系统按该记录类型（<span id="dmSchemaLabel">通用</span>）推荐典型列集合。
+          </div>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">目标表（可选）</label>
+          <select class="form-select" id="dmTable" disabled>
+            <option value="">请先选择来源记录</option>
+          </select>
+          <div class="form-text">选择表后自动带入该表全部列；可手动增删。</div>
+        </div>
+      </div>
+
+      <div class="row g-3 mt-1">
+        <div class="col-md-6">
+          <label class="form-label">导出列（可多选）</label>
+          <select class="form-select" id="dmColumns" multiple size="6"></select>
+          <div class="d-flex gap-2 mt-2">
+            <button class="btn btn-outline-secondary btn-sm" type="button" id="dmAddColumn">+ 添加自定义列</button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" id="dmSelectAll">全选</button>
+            <button class="btn btn-outline-secondary btn-sm" type="button" id="dmClearColumns">清空</button>
+          </div>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">脱敏规则模板</label>
+          <div class="btn-group" role="group" id="dmRuleTemplates">
+            <button type="button" class="btn btn-outline-primary btn-sm" data-tpl="minimal">最小</button>
+            <button type="button" class="btn btn-outline-primary btn-sm" data-tpl="standard">标准</button>
+            <button type="button" class="btn btn-outline-primary btn-sm active" data-tpl="strict">严格</button>
+          </div>
+          <div class="form-text" id="dmTplDesc">严格（默认）：所有可能含个人信息列均脱敏；IP/Token 哈希不可逆。</div>
+          <div class="mt-2">
+            <label class="form-label">行数</label>
+            <input type="number" id="dmRowCount" class="form-control" value="50" min="1" max="2000">
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-3">
+        <label class="form-label">规则预览（每列最终脱敏含义）</label>
+        <div id="dmRulePreview" class="border rounded p-2 small bg-light">
+          请先选择来源记录与导出列…
+        </div>
+      </div>
+
+      <div class="mt-3">
+        <label class="form-label">脱敏规则（JSON 高级编辑）</label>
+        <textarea class="form-control font-monospace" id="dmMaskRules" rows="3"
+                  placeholder='{"phone":"mask","email":"mask","name":"fake"}'>{}</textarea>
+        <div class="form-text">
+          默认按 PII 自动识别；在「规则预览」或这里直接调整即可。
+          <code>mask</code>=部分打码（138****1234）·<code>hash</code>=不可逆哈希 ·
+          <code>drop</code>=删除列 · <code>fake</code>=仿真替换 · <code>none</code>=不脱敏。
+          <br>也可先到「敏感发现与分级」页用扫描结果一键生成建议规则。
+        </div>
+      </div>
+
+      <div class="mt-3">
+        <button class="btn btn-primary" id="dmExportBtn"><i class="bi bi-download"></i> 生成脱敏导出</button>
+      </div>
+    </div>
+
+    <div class="page-card mt-3">
+      <div class="card-section-title"><i class="bi bi-clock-history"></i> 导出历史</div>
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead><tr>
+            <th>ID</th><th>来源记录</th><th>列</th><th>脱敏规则</th>
+            <th>行数</th><th>生成时间</th><th class="text-end">操作</th>
+          </tr></thead>
+          <tbody id="dmExportTable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="alert alert-info mt-3" role="alert">
+      <i class="bi bi-info-circle"></i> <strong>合规说明</strong>：导出文件仅用于分析，
+      敏感字段已脱敏（手机号 138****1234 / 邮箱打码 / 身份证打码 / 姓名仿真替换），
+      文件存放于 <code>backups/anonymized_exports/</code>。请按数据分级与最小必要原则使用。
+    </div>
   </div>
 </div>
+{% endblock %}
 
-<div class="page-card mt-3">
-  <div class="card-section-title"><i class="bi bi-clock-history"></i> 导出历史</div>
-  <div class="table-responsive">
-    <table class="table table-hover align-middle mb-0">
-      <thead><tr>
-        <th>ID</th><th>来源记录</th><th>列</th><th>脱敏规则</th>
-        <th>行数</th><th>生成时间</th><th class="text-end">操作</th>
-      </tr></thead>
-      <tbody id="dmExportTable"></tbody>
-    </table>
-  </div>
-</div>
-
-<div class="alert alert-info mt-3" role="alert">
-  <i class="bi bi-info-circle"></i> <strong>合规说明</strong>：导出文件仅用于分析，敏感字段已脱敏（手机号 138****1234 / 邮箱打码 / 身份证打码 / 姓名仿真替换），
-  文件存放于 <code>backups/anonymized_exports/</code>。请按数据分级与最小必要原则使用。
-</div>
+{% block scripts %}
+{{ super() }}
+<script src="{{ url_for('static', filename='js/datamining.js') }}?v=2026091501"></script>
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    if (window.DataminingPage) window.DataminingPage.init();
+  });
+</script>
 {% endblock %}

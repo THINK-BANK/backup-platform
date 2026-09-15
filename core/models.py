@@ -1586,6 +1586,80 @@ def delete_anonymized_export(export_id: int) -> None:
     db.execute("DELETE FROM anonymized_exports WHERE id=?", (export_id,))
 
 
+# ------------------------- 敏感数据扫描结果（数据价值挖掘） -------------------------
+def create_scan_result(data: dict) -> int:
+    """落一条扫描结果。**约定：findings 内只允许脱敏样例，禁止写入原始敏感值。**"""
+    now = db.now_iso()
+    findings = data.get("findings")
+    row = {
+        "task_id": int(data.get("task_id") or 0) or None,
+        "record_id": int(data.get("record_id") or 0) or None,
+        "path": data.get("path") or "",
+        "size_bytes": int(data.get("size_bytes") or 0),
+        "scanned_chars": int(data.get("scanned_chars") or 0),
+        "max_level": int(data.get("max_level") or 0),
+        "risk_score": int(data.get("risk_score") or 0),
+        "hit_count": int(data.get("hit_count") or 0),
+        "findings": json.dumps(findings, ensure_ascii=False)
+                    if isinstance(findings, (list, dict)) else (findings or "[]"),
+        "scannable": int(data.get("scannable", 1)),
+        "reason": data.get("reason") or "",
+        "scanned_at": now,
+        "scanned_by": data.get("scanned_by") or "",
+    }
+    cols = list(row.keys())
+    sql = "INSERT INTO data_scan_results ({}) VALUES ({})".format(
+        ",".join(cols), ",".join("?" * len(cols)))
+    return db.execute(sql, tuple(row.values()))
+
+
+def _scan_to_dict(row) -> Optional[dict]:
+    if row is None:
+        return None
+    d = dict(row)
+    raw = d.get("findings")
+    if isinstance(raw, str) and raw:
+        try:
+            d["findings"] = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            d["findings"] = []
+    return d
+
+
+def get_scan_result(scan_id: int) -> Optional[dict]:
+    row = db.query_one("SELECT * FROM data_scan_results WHERE id=?", (scan_id,))
+    return _scan_to_dict(row) if row else None
+
+
+def list_scan_results(task_id: int = None, limit: int = 100) -> list:
+    sql = "SELECT * FROM data_scan_results"
+    params = []
+    if task_id:
+        sql += " WHERE task_id=?"
+        params.append(task_id)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    return [_scan_to_dict(r) for r in db.query(sql, params)]
+
+
+def latest_scan_map() -> dict:
+    """每个任务最近一次扫描的 max_level（用于资产盘点纳入合规敏感度）。"""
+    rows = db.query(
+        "SELECT task_id, max_level, risk_score, hit_count, scanned_at FROM data_scan_results s "
+        "WHERE task_id IS NOT NULL AND id = ("
+        "  SELECT MAX(id) FROM data_scan_results WHERE task_id = s.task_id)")
+    return {int(r["task_id"]): {
+        "max_level": int(r["max_level"] or 0),
+        "risk_score": int(r["risk_score"] or 0),
+        "hit_count": int(r["hit_count"] or 0),
+        "scanned_at": r.get("scanned_at") or "",
+    } for r in rows}
+
+
+def delete_scan_result(scan_id: int) -> None:
+    db.execute("DELETE FROM data_scan_results WHERE id=?", (scan_id,))
+
+
 # ------------------------- 准 CDP：PIT 恢复点日志 -------------------------
 _RJ_FIELDS = [
     "task_id", "record_id", "set_id", "parent_rp_id", "rp_kind", "rp_type",

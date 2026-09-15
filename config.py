@@ -93,6 +93,12 @@ BACKUP_IDLE_TIMEOUT = int(os.environ.get("BACKUP_IDLE_TIMEOUT", "1800"))
 BACKUP_RESUME_ENABLED = os.environ.get("BACKUP_RESUME_ENABLED", "true").lower() == "true"
 BACKUP_RESUME_TTL = int(os.environ.get("BACKUP_RESUME_TTL", "43200"))    # 断点保留 12h
 BACKUP_REMOTE_STAGE = os.environ.get("BACKUP_REMOTE_STAGE", "/tmp/bk_stage")  # 远端暂存目录
+# 固定产物（物理备份 tar / expdp .dmp / .bak）没有 rc 标记文件，用「远端文件连续
+# 多久不再增长」判定写盘结束；仅在远端备份命令尚未返回时才有实际等待。
+BACKUP_STABLE_SECS = int(os.environ.get("BACKUP_STABLE_SECS", "20"))
+# 拉回中断后是否在远端保留产物与完成标记：重试时可直接复用（跳过昂贵的备份执行），
+# 成功拉回后仍会清理，数据库服务器上不留任何产物。
+BACKUP_REMOTE_KEEP_DONE = os.environ.get("BACKUP_REMOTE_KEEP_DONE", "true").lower() == "true"
 
 # ---------- 演示/兜底模式 ----------
 # 自 2026-08-14 起不再支持仿真/兜底占位备份；该配置保留为兼容但强制按 off 处理。

@@ -204,7 +204,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 | 能力 | 说明 |
 |---|---|
-| 数据价值挖掘 | 备份数据脱敏导出（Data Mining / Anonymized Export），备份库变现为测试数据源 |
+| 数据价值挖掘 | 资产盘点 → 敏感发现与国标分级（GB/T 43697-2024）→ 价值评估与冷数据治理 → 合规概览（PIPL/等保）→ 脱敏导出，把冷备份变成可治理、可举证、可外发的数据资产 |
 | 全局重删 | 参照鼎甲迪备全局重删：块级去重，节省存储 |
 | 自动合成全量 | 增量链自动合并为合成全量（永久增量体系）|
 | 对象级恢复 | 从备份中精准提取指定表/对象，不必整库恢复 |
@@ -482,6 +482,8 @@ docker build -t backup-platform:local .
   - 全局默认可用环境变量覆盖：`BACKUP_CMD_TIMEOUT` / `BACKUP_IDLE_TIMEOUT` / `BACKUP_RETRY_INTERVAL` / `BACKUP_RESUME_ENABLED` / `BACKUP_RESUME_TTL` / `BACKUP_REMOTE_STAGE`。
 - **可观测性**：SSH 传输与 SFTP 拉取每 30s 输出进度（已传大小 + 速率 MB/s）到操作日志，大库备份不再"黑屏干等"。
 - **修复**：`remote_has_tool` 另起 SSH 连接失败时会被误判成"没装 zstd"→ 改用当前连接 `command -v zstd` 探测，避免大库备份白白丢掉压缩。
+
+> 本次更新的完整说明（含 O(n²) 根因分析、逐项实测数据、任务级参数表与已知边界）见 [readme_20260915.md](readme_20260915.md)。
 
 ### v1.4.6（2026-09-15）
 

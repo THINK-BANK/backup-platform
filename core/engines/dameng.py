@@ -177,22 +177,34 @@ class DamengEngine(BackupEngine):
         ts = self._timestamp()
         client = remote_dump._connect(ssh_host)
         sftp = client.open_sftp()
-        remote_dir = f"/home/dmdba/dm_bkp_{ts}"
+        # 固定产物形态：远端路径**确定性**（按任务固定，不含随机时间戳），
+        # 备份成功后写完成标记 → 拉回中断时重试直接续传，**不重跑 DM 备份**。
+        tid = int(self.task.get("id") or 0)
+        remote_dir = f"/home/dmdba/dm_bkp_t{tid}"
         remote_tar = f"{remote_dir}.tar.gz"
 
         try:
+            # 0) 复用探测：上次联机/dmrman 备份已跑完并打包完成，只是拉回中断
+            ready = remote_dump.remote_artifact_ready(client, remote_tar, min_size=1)
+            reuse = bool(ready["reusable"])
+            if reuse:
+                self.logger.info("[%s] 复用远端已完成备份集 %s（%s），跳过 DM 备份执行",
+                                 self.task_name, remote_tar,
+                                 db.human_size(ready["size"]))
+
             # 1) 建备份目录并 chown 给 dmdba（dmserver 以 dmdba 运行，备份集由
-            #    服务端进程写入，必须可写）
-            prep = (f"mkdir -p {remote_dir} && chown dmdba {remote_dir} "
-                    f"&& chmod 755 {remote_dir}")
-            _ssh_exec_pipe(client, remote_dump._wrap_login(prep), timeout=60)
+            #    服务端进程写入，必须可写）；非复用路径清空上次残留
+            if not reuse:
+                prep = (f"rm -rf {remote_dir} {remote_tar} && mkdir -p {remote_dir} "
+                        f"&& chown dmdba {remote_dir} && chmod 755 {remote_dir}")
+                _ssh_exec_pipe(client, remote_dump._wrap_login(prep), timeout=60)
 
             # 2) 联机备份：disql 执行 BACKUP DATABASE（SQL 写文件执行，避免引号嵌套）
             disql_bin = remote_dump.resolve_remote_tool(ssh_host, "disql",
                                                         check_user="dmdba")
             online_out = ""
-            online_ok = False
-            if disql_bin:
+            online_ok = bool(reuse)      # 复用时视作已成功，跳过全部备份执行
+            if disql_bin and not reuse:
                 pw = db.decrypt_secret(self.task.get("password") or "")
                 user = self.task.get("username") or "SYSDBA"
                 port = self.task.get("port") or 5236
@@ -280,10 +292,14 @@ class DamengEngine(BackupEngine):
                     duration_sec=duration, stdout=online_out, stderr="",
                     message=f"达梦物理备份失败: {last_err[:900]}")
 
-            # 4) 把远端备份集打成 tar.gz，再经 SFTP 拉回本机
-            tar_cmd = f"tar czf {remote_tar} -C {remote_dir} ."
-            out2, err2, rc2 = _ssh_exec_pipe(
-                client, remote_dump._wrap_login(tar_cmd), timeout=3600)
+            # 4) 把远端备份集打成 tar.gz，再断点续传拉回本机
+            #    （复用时 tar 包已存在，无需重新打包）
+            if reuse:
+                out2, err2, rc2 = "", "", 0
+            else:
+                tar_cmd = f"tar czf {remote_tar} -C {remote_dir} ."
+                out2, err2, rc2 = _ssh_exec_pipe(
+                    client, remote_dump._wrap_login(tar_cmd), timeout=3600)
             if rc2 != 0:
                 snippet = (err2 or "")[-800:]
                 return BackupResult(
@@ -291,10 +307,24 @@ class DamengEngine(BackupEngine):
                     duration_sec=duration, stdout=online_out, stderr=err2,
                     message=f"远端备份集打包失败(rc={rc2}): {snippet}")
 
+            # 4.5) 写远端完成标记：下次重试据此复用，**不重跑 DM 备份**
+            if not reuse:
+                try:
+                    _tsz = int(sftp.stat(remote_tar).st_size or -1)
+                except Exception:
+                    _tsz = -1
+                remote_dump.mark_remote_artifact_done(
+                    client, remote_tar, size=_tsz,
+                    note=f"dameng {ssh_host.get('host_key','')}")
+
             out_dir = self._output_dir()
             os.makedirs(out_dir, exist_ok=True)
-            local_path = os.path.join(out_dir, f"dm_backup_{ts}.tar.gz")
-            sftp.get(remote_tar, local_path)
+            pulled = remote_dump.sftp_pull_resumable(
+                client, remote_tar, os.path.join(out_dir, f"dm_backup_{ts}.tar.gz"),
+                task=self.task, key="dm.tar.gz", db_type=f"{self.db_type}_phys",
+                host_key=ssh_host.get("host_key", ""), has_rc=False,
+                stable_secs=3, label="达梦备份集", min_size=1024)
+            local_path = pulled["path"]
 
             size = os.path.getsize(local_path)
             checksum = db.sha256_file(local_path)
@@ -325,13 +355,16 @@ class DamengEngine(BackupEngine):
                 pass
             msg = (f"通过 SSH 在 {hk} 对达梦执行联机{('增量' if btype == 'incremental' else '全量')}"
                    f"物理备份成功，"
-                   f"备份集已拉回 {local_path} ({db.human_size(size)}){pitr_info}")
+                   f"备份集已拉回 {local_path} ({db.human_size(size)}){pitr_info}"
+                   f"{'（复用上次远端产物，未重跑备份）' if reuse else ''}"
+                   f"{'（断点续传）' if pulled['resumed'] else ''}")
             self.logger.info("[%s] %s", self.task_name, msg)
 
-            # 清理远端备份目录与临时脚本/tar（best-effort，失败不致命）
+            # 清理远端备份目录、tar 与完成标记（best-effort，失败不致命）
             try:
                 _ssh_exec_pipe(client, remote_dump._wrap_login(
-                    f"rm -rf {remote_dir} {remote_tar}"), timeout=60)
+                    f"rm -rf {remote_dir} {remote_tar} "
+                    f"{remote_dump.marker_path(remote_tar)}"), timeout=60)
             except Exception:
                 pass
 

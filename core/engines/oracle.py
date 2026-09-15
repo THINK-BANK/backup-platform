@@ -636,9 +636,13 @@ class OracleEngine(BackupEngine):
         from core.engines.file import _ssh_exec_pipe
 
         ts = self._timestamp()
-        bkp_prefix = f"ora_bkp_{ts}_"
+        # 固定产物形态：备份片前缀**确定性**（按任务固定，不含随机时间戳），
+        # 备份成功后写完成标记；拉回中断时重试直接续传，**不重跑 RMAN**。
+        tid = int(self.task.get("id") or 0)
+        bkp_prefix = f"ora_bkp_t{tid}_"
         remote_dir = "/u01/app/oracle/backup"
-        remote_cmd_file = f"{remote_dir}/rman_{ts}.cmd"
+        remote_marker = f"{remote_dir}/.bkdone_t{tid}"
+        remote_cmd_file = f"{remote_dir}/rman_t{tid}.cmd"
 
         # 1) 组装 RMAN 脚本（注意：rman target / @file 已建立连接，脚本内不要再 connect）
         if backup_type == BackupType.INCREMENTAL:
@@ -677,6 +681,25 @@ class OracleEngine(BackupEngine):
         _ssh_exec_pipe(client, remote_dump._wrap_login(prep), timeout=60)
         sftp = client.open_sftp()
         try:
+            # 0) 复用探测：上次 RMAN 已跑完（写了完成标记）但备份片拉回中断/失败 →
+            #    跳过重跑备份（RMAN 对大库可能跑数小时），直接从断点续传拉回。
+            ready = remote_dump.remote_artifact_ready(client, remote_marker, min_size=1)
+            reuse = bool(ready["reusable"])
+            if reuse:
+                self.logger.info("[%s] 复用远端已完成备份片（前缀 %s），跳过 RMAN 执行",
+                                 self.task_name, bkp_prefix)
+            else:
+                # 清掉上次残留备份片，避免与本次产物混淆
+                try:
+                    for _a in sftp.listdir_attr(remote_dir):
+                        if _a.filename.startswith(bkp_prefix):
+                            try:
+                                sftp.remove(f"{remote_dir}/{_a.filename}")
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
             # 写 RMAN 脚本（oracle 可读）
             with sftp.open(remote_cmd_file, "w") as f:
                 f.write(rman_script)
@@ -685,17 +708,22 @@ class OracleEngine(BackupEngine):
             except Exception:
                 pass
 
-            # 3) 远端执行：mkdir 备份目录 + rman target / @script（以 oracle 用户）
-            inner = f"mkdir -p {remote_dir} && {shlex.quote(rman_bin)} target / @{remote_cmd_file}"
-            shell = f"su - oracle -c {shlex.quote(inner)}"
-            wrapped = remote_dump._wrap_login(shell)
-            start = time.time()
-            out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=7200)
-            duration = round(time.time() - start, 3)
-            out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
-            err_text = err or ""
-            self.logger.info("[%s] 远端 RMAN 返回 rc=%s, 输出尾部: %s",
-                             self.task_name, rc, (out_text or err_text)[-600:])
+            if reuse:
+                out_text = f"复用远端已完成备份片（前缀 {bkp_prefix}），跳过 RMAN 执行"
+                err_text, rc, duration = "", 0, 0.0
+            else:
+                # 3) 远端执行：mkdir 备份目录 + rman target / @script（以 oracle 用户）
+                inner = (f"mkdir -p {remote_dir} && "
+                         f"{shlex.quote(rman_bin)} target / @{remote_cmd_file}")
+                shell = f"su - oracle -c {shlex.quote(inner)}"
+                wrapped = remote_dump._wrap_login(shell)
+                start = time.time()
+                out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=7200)
+                duration = round(time.time() - start, 3)
+                out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
+                err_text = err or ""
+                self.logger.info("[%s] 远端 RMAN 返回 rc=%s, 输出尾部: %s",
+                                 self.task_name, rc, (out_text or err_text)[-600:])
 
             # 成功标志：rc==0 且输出出现 "Finished backup"
             if rc != 0 or ("Finished backup" not in out_text
@@ -706,17 +734,30 @@ class OracleEngine(BackupEngine):
                     duration_sec=duration, stdout=out_text, stderr=err_text,
                     message=f"远端 RMAN 物理备份失败(rc={rc}): {snippet}")
 
-            # 4) SFTP 拉回所有备份片（匹配前缀 ora_bkp_{ts}_）
+            # 3.5) 写远端完成标记：下次重试据此复用备份片，**不重跑 RMAN**
+            if not reuse:
+                remote_dump.mark_remote_artifact_done(
+                    client, remote_marker, note=f"rman {ssh_host.get('host_key','')}")
+
+            # 4) 断点续传拉回所有备份片（匹配确定性前缀）；中断后从断点继续
             out_dir = self._output_dir()
             os.makedirs(out_dir, exist_ok=True)
+            try:
+                names = sorted(a.filename for a in sftp.listdir_attr(remote_dir)
+                               if a.filename.startswith(bkp_prefix))
+            except Exception:
+                names = []
             pieces = []
-            for attr in sftp.listdir_attr(remote_dir):
-                fname = attr.filename
-                if fname.startswith(bkp_prefix):
-                    remote_path = f"{remote_dir}/{fname}"
-                    local_path = os.path.join(out_dir, fname)
-                    sftp.get(remote_path, local_path)
-                    pieces.append((local_path, attr.st_size))
+            for fname in names:
+                remote_path = f"{remote_dir}/{fname}"
+                local_path = os.path.join(out_dir, fname)
+                res = remote_dump.sftp_pull_resumable(
+                    client, remote_path, local_path, task=self.task, key=fname,
+                    db_type=f"{self.db_type}_rman",
+                    host_key=ssh_host.get("host_key", ""),
+                    has_rc=False, stable_secs=3,
+                    label=f"rman {fname}", min_size=1024)
+                pieces.append((res["path"], res["size"]))
 
             if not pieces:
                 return BackupResult(
@@ -724,6 +765,10 @@ class OracleEngine(BackupEngine):
                     stdout=out_text, stderr=err_text,
                     message=f"远端 RMAN 执行成功但未在 {remote_dir} 找到备份片"
                             f"(前缀 {bkp_prefix})，可能 FORMAT 路径不正确。")
+
+            # 已完整拉回 → 清理远端备份片与完成标记（数据库服务器不留产物）
+            remote_dump.cleanup_remote_artifacts(
+                client, [f"{remote_dir}/{fn}" for fn in names] + [remote_marker])
 
             total_size = sum(sz for _, sz in pieces)
             # checksum 取首个备份片(主库数据备份)的 sha256；其余片写入清单
@@ -813,8 +858,14 @@ class OracleEngine(BackupEngine):
             # 兜底：若远端 profile 未就绪等场景，用 11g/19c 常见路径依次探测
             dp_dir = "/u01/app/oracle/admin/orcl19c/dpdump"
         self.logger.info("[%s] 远端 DATA_PUMP_DIR=%s", self.task_name, dp_dir)
-        remote_dmp = f"{dp_dir}/{ts}.dmp"
-        remote_log = f"{dp_dir}/{ts}.log"
+        # 固定产物形态：dmp/log 文件名**确定性**（按任务固定，不含随机时间戳），
+        # 成功后写完成标记 → 拉回中断时重试直接续传，**不重跑 expdp**。
+        tid = int(self.task.get("id") or 0)
+        dmp_name = f"bk_t{tid}.dmp"
+        log_name = f"bk_t{tid}.log"
+        remote_dmp = f"{dp_dir}/{dmp_name}"
+        remote_log = f"{dp_dir}/{log_name}"
+        remote_marker = f"{dp_dir}/.bkdone_t{tid}"
 
         # 远端脚本：先试 system/<pw>@//host:port/service，失败回退 / as sysdba
         # 工具路径动态解析（oracle 用户 profile → 目录 glob 枚举），绝不硬编码
@@ -830,12 +881,12 @@ class OracleEngine(BackupEngine):
             "export PATH=$ORACLE_HOME/bin:$PATH\n"
             f"EXPDP_BIN={shlex.quote(expdp_bin)}\n"
             f"\"$EXPDP_BIN\" {conn_easy} {mode_args} DIRECTORY=DATA_PUMP_DIR "
-            f"DUMPFILE={ts}.dmp LOGFILE={ts}.log\n"
+            f"DUMPFILE={dmp_name} LOGFILE={log_name}\n"
             "RC=$?\n"
             "if [ $RC -ne 0 ]; then\n"
             f"  echo '[fallback] primary expdp failed (rc=$RC), retry with / as sysdba'\n"
             f"  \"$EXPDP_BIN\" \"'/ as sysdba'\" {mode_args} DIRECTORY=DATA_PUMP_DIR "
-            f"DUMPFILE={ts}.dmp LOGFILE={ts}.log\n"
+            f"DUMPFILE={dmp_name} LOGFILE={log_name}\n"
             "  RC=$?\n"
             "fi\n"
             'echo "EXPDP_RC=$RC"\n'
@@ -848,23 +899,41 @@ class OracleEngine(BackupEngine):
                 sftp.mkdir("/u01/app/oracle/backup")
             except IOError:
                 pass
-            remote_sh = f"/u01/app/oracle/backup/expdp_{ts}.sh"
-            with sftp.open(remote_sh, "w") as f:
-                f.write(expdp_sh)
-            try:
-                sftp.chmod(remote_sh, 0o755)
-            except Exception:
-                pass
 
-            inner = f"bash {remote_sh}"
-            shell = f"su - oracle -c {shlex.quote(inner)}"
-            wrapped = remote_dump._wrap_login(shell)
-            start = time.time()
-            out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=7200)
-            duration = round(time.time() - start, 3)
-            out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
-            err_text = err or ""
-            self.logger.info("[%s] 远端 expdp 返回 rc=%s", self.task_name, rc)
+            # 复用探测：上次 expdp 已导出完成但 dmp 拉回中断 → 跳过重跑 expdp
+            ready = remote_dump.remote_artifact_ready(client, remote_marker, min_size=1)
+            reuse = bool(ready["reusable"])
+            if reuse:
+                self.logger.info("[%s] 复用远端已完成 dmp %s，跳过 expdp 执行",
+                                 self.task_name, remote_dmp)
+            else:
+                # 清掉同名残留（expdp 遇到已存在的 dumpfile 会直接报错退出）
+                for _p in (remote_dmp, remote_log):
+                    try:
+                        sftp.remove(_p)
+                    except Exception:
+                        pass
+                remote_sh = f"/u01/app/oracle/backup/expdp_{ts}.sh"
+                with sftp.open(remote_sh, "w") as f:
+                    f.write(expdp_sh)
+                try:
+                    sftp.chmod(remote_sh, 0o755)
+                except Exception:
+                    pass
+
+            if reuse:
+                out_text = f"复用远端已完成 dmp {remote_dmp}，跳过 expdp 执行"
+                err_text, rc, duration = "", 0, 0.0
+            else:
+                inner = f"bash {remote_sh}"
+                shell = f"su - oracle -c {shlex.quote(inner)}"
+                wrapped = remote_dump._wrap_login(shell)
+                start = time.time()
+                out, err, rc = _ssh_exec_pipe(client, wrapped, timeout=7200)
+                duration = round(time.time() - start, 3)
+                out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else out
+                err_text = err or ""
+                self.logger.info("[%s] 远端 expdp 返回 rc=%s", self.task_name, rc)
 
             if rc != 0:
                 snippet = (out_text or err_text)[-1500:]
@@ -882,21 +951,42 @@ class OracleEngine(BackupEngine):
                     duration_sec=duration, stdout=out_text, stderr=err_text,
                     message=f"远端 expdp 执行返回成功，但未找到 dmp 文件: {remote_dmp}")
 
+            # 写远端完成标记：下次重试据此复用，**不重跑 expdp**
+            if not reuse:
+                remote_dump.mark_remote_artifact_done(
+                    client, remote_marker, size=int(dmp_attr.st_size or -1),
+                    note=f"expdp {ssh_host.get('host_key','')}")
+
             out_dir = self._output_dir()
             os.makedirs(out_dir, exist_ok=True)
-            local_dmp = os.path.join(out_dir, f"{ts}.dmp")
+            # 断点续传拉回 dmp（中断后从已传字节继续，不重跑导出）
+            res = remote_dump.sftp_pull_resumable(
+                client, remote_dmp, os.path.join(out_dir, f"{ts}.dmp"),
+                task=self.task, key="expdp.dmp", db_type=f"{self.db_type}_dmp",
+                host_key=ssh_host.get("host_key", ""), has_rc=False,
+                stable_secs=3, label="expdp dmp", min_size=1024)
+            local_dmp = res["path"]
             local_log = os.path.join(out_dir, f"{ts}.log")
-            sftp.get(remote_dmp, local_dmp)
             try:
-                sftp.get(remote_log, local_log)
-            except IOError:
+                remote_dump.sftp_pull_resumable(
+                    client, remote_log, local_log, task=self.task,
+                    key="expdp.log", db_type=f"{self.db_type}_dmp",
+                    host_key=ssh_host.get("host_key", ""), has_rc=False,
+                    stable_secs=3, label="expdp log", min_size=0)
+            except Exception:
                 local_log = None  # log 缺失不致命
+
+            # 已完整拉回 → 清理远端 dmp/log 与完成标记（服务器不留产物）
+            remote_dump.cleanup_remote_artifacts(
+                client, [remote_dmp, remote_log, remote_marker])
 
             size = os.path.getsize(local_dmp)
             checksum = db.sha256_file(local_dmp)
             hk = ssh_host.get("host_key", "remote")
             msg = (f"通过 SSH 在 {hk} 以 oracle 用户执行 expdp({mode_desc})成功，"
-                   f"已拉回 dmp: {local_dmp} ({db.human_size(size)})")
+                   f"已拉回 dmp: {local_dmp} ({db.human_size(size)})"
+                   f"{'（复用上次远端产物，未重跑导出）' if reuse else ''}"
+                   f"{'（断点续传）' if res['resumed'] else ''}")
             self.logger.info("[%s] %s", self.task_name, msg)
             return BackupResult(
                 success=True, status=BackupStatus.SUCCESS,

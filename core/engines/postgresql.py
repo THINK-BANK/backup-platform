@@ -103,20 +103,26 @@ class PostgreSQLEngine(BackupEngine):
                 stdout=res.get("stdout", ""), stderr=res.get("stderr", ""))
 
         out_dir = self._output_dir()
-        pieces = remote_dump._pull_remote_tars(client, res["remote_dir"], out_dir)
+        # 逐 tar 包断点续传拉回（大实例 base.tar.gz 可能数十 GB，断链不必重传）
+        pieces = remote_dump._pull_remote_tars(
+            client, res["remote_dir"], out_dir, task=self.task,
+            host_key=ssh_host.get("host_key", ""), db_type=f"{self.db_type}_phys")
         if not pieces:
             return BackupResult(
                 success=False, status=BackupStatus.FAILED,
                 stdout=res.get("stdout", ""), stderr=res.get("stderr", ""),
                 message=f"远端 pg_basebackup 执行成功但未在 {res['remote_dir']} 找到 *.tar[.gz] 产物。")
 
+        # 已完整拉回 → 清理远端产物；拉回失败时（异常路径）保留，重试可复用而不重跑
+        remote_dump.cleanup_remote_artifacts(client, [], dirs=[res["remote_dir"]])
         total_size = sum(sz for _, sz in pieces)
         first_local = pieces[0][0]
         checksum = db.sha256_file(first_local)
         hk = ssh_host.get("host_key", "remote")
         msg = (f"通过 SSH 在 {hk} 执行 pg_basebackup 物理备份成功，"
                f"已拉回 {len(pieces)} 个 tar 包，共 {db.human_size(total_size)}"
-               f"（主包: {os.path.basename(first_local)}）")
+               f"（主包: {os.path.basename(first_local)}）"
+               f"{'（复用上次远端产物，未重跑备份）' if res.get('reused') else ''}")
         self.logger.info("[%s] %s", self.task_name, msg)
         return BackupResult(
             success=True, status=BackupStatus.SUCCESS,

@@ -224,9 +224,16 @@ class SQLServerEngine(BackupEngine):
                                 message=f"解析备份目录失败: {e}")
 
         ts = self._timestamp()
-        fname = f"{db_name}_{bt.value}_{ts}{ext}"
+        # 固定产物形态：文件名**确定性**（按任务固定，不含随机时间戳），
+        # 备份成功后写完成标记 → 拉回中断时重试直接续传，**不重跑 BACKUP**。
+        # T-SQL 用 WITH INIT，同名文件会被本次备份覆盖，不会产生叠加。
+        tid = int(self.task.get("id") or 0)
+        fname = f"{db_name}_{bt.value}_t{tid}{ext}"
         sep = "\\" if win else "/"
         disk_path = f"{bdir}{sep}{fname}"
+        # SFTP 侧统一用正斜杠（Windows OpenSSH 的 SFTP 接受正斜杠路径）
+        remote_ref = disk_path.replace("\\", "/")
+        remote_marker = f"{remote_ref}.bkdone"
 
         # 确保目录存在（Linux 归属 mssql 用户，避免“操作系统错误 5/访问被拒绝”）
         if ssh_host and not win:
@@ -257,18 +264,40 @@ class SQLServerEngine(BackupEngine):
                     f"WITH NAME = N'backup-platform', COMPRESSION, CHECKSUM, "
                     f"STATS = 10, INIT")
 
-        start = time.time()
-        try:
-            rc, out, err = self._exec_tsql(tsql, ssh_host=ssh_host)
-        except Exception as e:
-            return BackupResult(success=False, status=BackupStatus.FAILED,
-                                simulated=False,
-                                message=f"SQL Server 备份执行失败: {e}")
-        if rc != 0:
-            return BackupResult(
-                success=False, status=BackupStatus.FAILED, simulated=False,
-                stdout=out, stderr=err,
-                message=f"BACKUP 失败(rc={rc}): {(err or out)[:500]}")
+        # 复用探测：上次 BACKUP 已完成但产物拉回中断 → 跳过重跑 BACKUP
+        reuse = False
+        if ssh_host:
+            try:
+                _c = remote_dump._connect(ssh_host)
+                try:
+                    reuse = bool(remote_dump.remote_artifact_ready(
+                        _c, remote_marker, min_size=1)["reusable"])
+                finally:
+                    try:
+                        _c.close()
+                    except Exception:
+                        pass
+            except Exception:
+                reuse = False
+
+        if reuse:
+            self.logger.info("[%s] 复用远端已完成备份产物 %s，跳过 BACKUP 执行",
+                             self.task_name, disk_path)
+            start = time.time()
+            rc, out, err = 0, "", ""
+        else:
+            start = time.time()
+            try:
+                rc, out, err = self._exec_tsql(tsql, ssh_host=ssh_host)
+            except Exception as e:
+                return BackupResult(success=False, status=BackupStatus.FAILED,
+                                    simulated=False,
+                                    message=f"SQL Server 备份执行失败: {e}")
+            if rc != 0:
+                return BackupResult(
+                    success=False, status=BackupStatus.FAILED, simulated=False,
+                    stdout=out, stderr=err,
+                    message=f"BACKUP 失败(rc={rc}): {(err or out)[:500]}")
 
         # 服务器端产物存在性与大小
         size = 0
@@ -288,6 +317,11 @@ class SQLServerEngine(BackupEngine):
                         client, remote_dump._wrap_login(check), timeout=60)
                     txt = _to_text(out2).strip()
                     size = 0 if txt == "missing" else int(txt or 0)
+                    # 写远端完成标记：下次重试据此复用，**不重跑 BACKUP**
+                    if (not reuse) and size > 0:
+                        remote_dump.mark_remote_artifact_done(
+                            client, remote_marker, size=size,
+                            note=f"sqlserver {fname}")
                 finally:
                     try:
                         client.close()
@@ -296,19 +330,26 @@ class SQLServerEngine(BackupEngine):
             except Exception:
                 pass
 
-        # SFTP 拉回产物
+        # 断点续传拉回产物（中断后从已传字节继续，不重跑 BACKUP）
         out_dir = self._output_dir()
         os.makedirs(out_dir, exist_ok=True)
         local_path = os.path.join(out_dir, fname)
+        resumed = False
         try:
             client = remote_dump._connect(ssh_host)
-            sftp = client.open_sftp()
             try:
-                # Windows OpenSSH 的 SFTP 通常接受正斜杠路径
-                remote_ref = disk_path.replace("\\", "/") if win else disk_path
-                sftp.get(remote_ref, local_path)
+                _r = remote_dump.sftp_pull_resumable(
+                    client, remote_ref, local_path, task=self.task,
+                    key="mssql.bak", db_type=f"{self.db_type}_bak",
+                    host_key=(ssh_host or {}).get("host_key", ""),
+                    has_rc=False, stable_secs=3,
+                    label=os.path.basename(fname), min_size=1024)
+                resumed = bool(_r.get("resumed"))
+                local_path = _r["path"]
+                # 已完整拉回 → 清理远端产物与完成标记（服务器不留产物）
+                remote_dump.cleanup_remote_artifacts(
+                    client, [remote_ref, remote_marker])
             finally:
-                sftp.close()
                 try:
                     client.close()
                 except Exception:
@@ -336,7 +377,9 @@ class SQLServerEngine(BackupEngine):
             op_label = "完整备份(BACKUP DATABASE)"
         msg = (f"SQL Server {op_label}成功: [{db_name}] → "
                f"{os.path.basename(local_path)} ({db.human_size(size)})，"
-               f"经 SSH 自 {hk} 拉回")
+               f"经 SSH 自 {hk} 拉回"
+               f"{'（复用上次远端产物，未重跑备份）' if reuse else ''}"
+               f"{'（断点续传）' if resumed else ''}")
         return BackupResult(
             success=True, status=BackupStatus.SUCCESS,
             backup_path=local_path, size_bytes=size,
