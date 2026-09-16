@@ -96,6 +96,114 @@
   }
   .mode-chip.physical { background: #fef3c7; color: #92400e; }
 
+  /* ===== 态势区块（趋势 / 风险 / 容量 / 实时） ===== */
+  .trend-wrap { position: relative; }
+  .trend-svg {
+    width: 100%;
+    height: 130px;
+    display: block;
+    background: linear-gradient(0deg, #f8fafc 0 1px, transparent 1px) 0 0/100% 25%;
+  }
+  .trend-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #94a3b8;
+    margin-top: 4px;
+  }
+  .trend-legend {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    font-size: 12px;
+    color: #475569;
+    margin-top: 6px;
+  }
+  .trend-legend i {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 2px;
+    margin-right: 4px;
+  }
+
+  .att-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--bs-border-color);
+    background: #fff;
+    margin-bottom: 8px;
+    cursor: pointer;
+  }
+  .att-row:last-child { margin-bottom: 0; }
+  .att-row i { font-size: 15px; line-height: 1.3; }
+  .att-row.sev-high   { border-left: 3px solid #ef4444; }
+  .att-row.sev-high i { color: #ef4444; }
+  .att-row.sev-medium { border-left: 3px solid #f59e0b; }
+  .att-row.sev-medium i { color: #f59e0b; }
+  .att-row.sev-low    { border-left: 3px solid #94a3b8; }
+  .att-row.sev-low i  { color: #94a3b8; }
+  .att-title { font-size: 13px; font-weight: 600; color: #0f172a; }
+  .att-detail { font-size: 12px; color: #64748b; }
+  .att-empty { color: #10b981; font-size: 13px; padding: 10px 0; }
+  .att-empty i { margin-right: 6px; }
+
+  .cap-block { margin-bottom: 12px; }
+  .cap-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .cap-grid > div {
+    background: #f8fafc;
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .cap-grid span { display: block; font-size: 11px; color: #64748b; }
+  .cap-grid b { font-size: 14px; color: #0f172a; }
+
+  .rt-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
+  .rt-pill {
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+  }
+  .rt-pill.ok  { background: #d1fae5; color: #065f46; }
+  .rt-pill.bad { background: #fee2e2; color: #991b1b; }
+  .rt-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    border-bottom: 1px dashed #eef2f7;
+    font-size: 13px;
+  }
+  .rt-row:last-child { border-bottom: 0; }
+  .rt-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; }
+  .rt-dot.ok { background: #10b981; }
+  .rt-dot.bad { background: #ef4444; }
+  .rt-name { color: #0f172a; font-weight: 600; white-space: nowrap; }
+  .rt-reason {
+    margin-left: auto;
+    font-size: 11px;
+    max-width: 46%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .nr-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px dashed #eef2f7;
+    font-size: 13px;
+  }
+  .nr-row:last-child { border-bottom: 0; }
+  .nr-name { color: #334155; }
+  .nr-time { color: #64748b; font-variant-numeric: tabular-nums; }
+
   /* 表格：紧凑可读 */
   .table-dash { font-size: 13px; }
   .table-dash th { font-weight: 600; color: #475569; background: #f8fafc; }
@@ -103,12 +211,49 @@
   .table-dash td.col-name { font-weight: 600; color: #0f172a; }
   .table-dash td.col-time { color: #64748b; font-variant-numeric: tabular-nums; }
   .table-dash code { color: #475569; }
+
+  /* 统计卡副标题（保护率 / RPO / 风险 / 恢复点） */
+  .stat-sub {
+    font-size: 12px;
+    color: #64748b;
+    margin-top: 2px;
+  }
+  .stat-sub.risk { color: #b91c1c; }
+  .stat-sub.ok { color: #047857; }
+  .stat-sub.warn { color: #b45309; }
+
+  /* 可点击指标卡（点击弹出明细） */
+  .card-stat.metric-click { cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; }
+  .card-stat.metric-click:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(15, 23, 42, .1); }
+  .metric-table { font-size: 13px; }
+  .metric-table th { background: #f8fafc; color: #475569; font-weight: 600; }
+  .metric-kv {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .metric-kv > div { background: #f8fafc; border-radius: 8px; padding: 8px 10px; }
+  .metric-kv span { display: block; font-size: 11px; color: #64748b; }
+  .metric-kv b { font-size: 15px; color: #0f172a; }
+  .metric-hint { font-size: 12px; color: #64748b; margin-bottom: 8px; }
 </style>
 
 <div class="toolbar">
   <div>
     <div class="page-title"><i class="bi bi-speedometer2"></i> 仪表盘</div>
     <div class="page-sub">备份任务与记录总览</div>
+  </div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-sm btn-outline-secondary" onclick="location.href='/tasks'">
+      <i class="bi bi-plus-lg"></i> 新建备份任务
+    </button>
+    <button class="btn btn-sm btn-outline-primary" onclick="location.href='/restore'">
+      <i class="bi bi-box-arrow-in-down"></i> 发起恢复
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="location.href='/drills'">
+      <i class="bi bi-shield-check"></i> 恢复演练
+    </button>
   </div>
 </div>
 
@@ -144,13 +289,99 @@
   </div>
 </div>
 
+<!-- 保护态势 & RPO 合规（对标业界 SLA 视图：保护覆盖率 / RPO 达标率 / 待处理风险 / 恢复点） -->
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card-stat">
+      <div class="stat-icon"><i class="bi bi-shield-check"></i></div>
+      <div class="stat-num" id="st_protected">-</div>
+      <div class="stat-label">已保护 / 启用任务</div>
+      <div class="stat-sub" id="st_coverage">-</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card-stat">
+      <div class="stat-icon"><i class="bi bi-stopwatch"></i></div>
+      <div class="stat-num" id="st_rpo_rate">-</div>
+      <div class="stat-label">RPO 合规率</div>
+      <div class="stat-sub" id="st_rpo_tail">-</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card-stat">
+      <div class="stat-icon"><i class="bi bi-exclamation-octagon"></i></div>
+      <div class="stat-num" id="st_risk">-</div>
+      <div class="stat-label">待处理风险</div>
+      <div class="stat-sub" id="st_risk_tail">-</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card-stat">
+      <div class="stat-icon"><i class="bi bi-clock-history"></i></div>
+      <div class="stat-num" id="st_recovery">-</div>
+      <div class="stat-label">可用恢复点</div>
+      <div class="stat-sub" id="st_recovery_tail">-</div>
+    </div>
+  </div>
+</div>
+
+<!-- 可信度四指标（恢复演练通过率 / 副本复制成功率 / 环比 / 保护对象覆盖率）——点击查看明细 -->
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="card-stat metric-click" data-metric="drills" title="点击查看演练明细">
+      <div class="stat-icon"><i class="bi bi-clipboard-check"></i></div>
+      <div class="stat-num" id="st_drill_rate">-</div>
+      <div class="stat-label">恢复演练通过率</div>
+      <div class="stat-sub" id="st_drill_tail">-</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card-stat metric-click" data-metric="replication" title="点击查看未复制清单">
+      <div class="stat-icon"><i class="bi bi-cloud-arrow-up"></i></div>
+      <div class="stat-num" id="st_rep_rate">-</div>
+      <div class="stat-label">副本/异地复制成功率</div>
+      <div class="stat-sub" id="st_rep_tail">-</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card-stat metric-click" data-metric="wow" title="点击查看两周对比">
+      <div class="stat-icon"><i class="bi bi-arrow-left-right"></i></div>
+      <div class="stat-num" id="st_wow">-</div>
+      <div class="stat-label">成功率环比（本周 vs 上周）</div>
+      <div class="stat-sub" id="st_wow_tail">-</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card-stat metric-click" data-metric="objects" title="点击查看未保护对象">
+      <div class="stat-icon"><i class="bi bi-diagram-2"></i></div>
+      <div class="stat-num" id="st_obj_cov">-</div>
+      <div class="stat-label">保护对象覆盖率（实例/库）</div>
+      <div class="stat-sub" id="st_obj_tail">-</div>
+    </div>
+  </div>
+</div>
+
+<!-- 指标明细弹窗（四张卡片共用） -->
+<div class="modal fade" id="metricModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h6 class="modal-title" id="metricModalTitle">指标明细</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body" id="metricModalBody"></div>
+    </div>
+  </div>
+</div>
+
 <!-- 重删 & 存储池统计（参照白皮书 §2.4 全局重删） -->
 <div class="row g-3 mb-4">
   <div class="col-md-4">
     <div class="card-stat">
       <div class="stat-icon"><i class="bi bi-diagram-3"></i></div>
       <div class="stat-num" id="st_dedup_ratio">-</div>
-      <div class="stat-label">全局重删比</div>
+      <div class="stat-label">存储节省率（压缩+重删）</div>
+      <div class="stat-sub" id="st_dedup_tail">-</div>
     </div>
   </div>
   <div class="col-md-4">
@@ -165,6 +396,56 @@
       <div class="stat-icon"><i class="bi bi-shield-lock"></i></div>
       <div class="stat-num" id="st_encrypt_enabled">-</div>
       <div class="stat-label">存储池加密任务</div>
+    </div>
+  </div>
+</div>
+
+<!-- 近 7 天趋势 + 需要关注 -->
+<div class="row g-3 mb-4">
+  <div class="col-md-8">
+    <div class="card p-3 h-100">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h6 class="mb-0"><i class="bi bi-bar-chart"></i> 近 7 天备份趋势</h6>
+        <small class="text-muted">按开始时间统计</small>
+      </div>
+      <div id="trendChart"></div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card p-3 h-100">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h6 class="mb-0"><i class="bi bi-exclamation-triangle"></i> 需要关注</h6>
+        <div class="d-flex align-items-center gap-2">
+          <span id="alertSummary"></span>
+          <a href="/tasks" class="small text-decoration-none">任务管理 <i class="bi bi-arrow-right-short"></i></a>
+        </div>
+      </div>
+      <div id="attentionList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 容量预测 + 实时保护 + 即将执行 -->
+<div class="row g-3 mb-4">
+  <div class="col-md-4">
+    <div class="card p-3 h-100">
+      <h6 class="mb-3"><i class="bi bi-hdd-stack"></i> 容量与增长</h6>
+      <div id="capacityBox"></div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card p-3 h-100">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h6 class="mb-0"><i class="bi bi-broadcast"></i> 实时保护</h6>
+        <a href="/realtime" class="small text-decoration-none">详情 <i class="bi bi-arrow-right-short"></i></a>
+      </div>
+      <div id="rtBox"></div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card p-3 h-100">
+      <h6 class="mb-2"><i class="bi bi-calendar-event"></i> 即将执行</h6>
+      <div id="nextRunsBox"></div>
     </div>
   </div>
 </div>

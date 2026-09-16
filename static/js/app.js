@@ -165,10 +165,11 @@
   // ------------------------- 仪表盘 -------------------------
   // 仪表盘 4 维分项（与后端 _calc_health 输出顺序/标签一致）
   const HEALTH_KEYS = [
-    { key: "任务覆盖",   max: 30, icon: "bi-list-check" },
-    { key: "备份成功率", max: 40, icon: "bi-check2-circle" },
-    { key: "调度完备",   max: 20, icon: "bi-calendar-event" },
-    { key: "同步延迟",   max: 10, icon: "bi-arrow-repeat" },
+    { key: "保护覆盖",   max: 25, icon: "bi-shield-check" },
+    { key: "备份成功率", max: 30, icon: "bi-check2-circle" },
+    { key: "调度完备",   max: 15, icon: "bi-calendar-event" },
+    { key: "RPO 合规",   max: 20, icon: "bi-stopwatch" },
+    { key: "备份时效",   max: 10, icon: "bi-arrow-repeat" },
   ];
   // 状态键 -> 颜色（与 badge-ok/badge-fail/badge-sim/badge-run 协调）
   const STATUS_COLOR = {
@@ -211,6 +212,107 @@
       </div>`;
   }
 
+  // -------------------- 仪表盘态势（保护 / 合规 / 趋势 / 风险） --------------------
+  // 说明：全部用内联 SVG + CSS 绘制，不引入任何 CDN 图表库（离线部署要求）。
+
+  /** 近 7 天备份趋势：绿=成功，红=失败（堆叠柱状，纯 SVG）。 */
+  function _trendChart(trend) {
+    if (!trend || !trend.length) return '<div class="dist-empty">暂无趋势数据</div>';
+    const max = Math.max(1, ...trend.map((b) => b.total || 0));
+    const H = 110, gap = 3, n = trend.length, bw = (100 - gap * (n - 1)) / n;
+    let bars = "";
+    trend.forEach((b, i) => {
+      const okH = ((b.success || 0) / max) * H;
+      const badH = ((b.failed || 0) / max) * H;
+      const x = i * (bw + gap);
+      if (okH > 0) {
+        bars += `<rect x="${x.toFixed(2)}" y="${(H - okH).toFixed(2)}" width="${bw.toFixed(2)}" height="${okH.toFixed(2)}" fill="#10b981" rx="1"><title>${esc(b.date)} 成功 ${b.success}</title></rect>`;
+      }
+      if (badH > 0) {
+        bars += `<rect x="${x.toFixed(2)}" y="${(H - okH - badH).toFixed(2)}" width="${bw.toFixed(2)}" height="${badH.toFixed(2)}" fill="#ef4444" rx="1"><title>${esc(b.date)} 失败 ${b.failed}</title></rect>`;
+      }
+      if (!b.total) {
+        bars += `<rect x="${x.toFixed(2)}" y="${H - 2}" width="${bw.toFixed(2)}" height="2" fill="#e2e8f0" rx="1"><title>${esc(b.date)} 无备份</title></rect>`;
+      }
+    });
+    const labels = trend.map((b) => `<span>${esc(String(b.date).slice(5))}</span>`).join("");
+    return `<div class="trend-wrap">
+      <svg viewBox="0 0 100 ${H}" preserveAspectRatio="none" class="trend-svg">${bars}</svg>
+      <div class="trend-labels">${labels}</div>
+      <div class="trend-legend">
+        <span><i style="background:#10b981"></i>成功</span>
+        <span><i style="background:#ef4444"></i>失败</span>
+        <span class="text-muted">峰值 ${max} 次/天</span>
+      </div>
+    </div>`;
+  }
+
+  const SEV_CLS = { high: "sev-high", medium: "sev-medium", low: "sev-low" };
+  const SEV_ICON = { high: "bi-exclamation-octagon", medium: "bi-exclamation-triangle", low: "bi-info-circle" };
+
+  /** 需要关注的风险清单（逾期 / 从未备份 / 最近失败 / 缺调度）。 */
+  function _attentionList(items) {
+    if (!items || !items.length) {
+      return '<div class="att-empty"><i class="bi bi-check2-circle"></i> 暂无需要关注的事项</div>';
+    }
+    return items.map((a) => {
+      const sev = SEV_CLS[a.severity] || "sev-low";
+      const icon = SEV_ICON[a.severity] || "bi-info-circle";
+      const link = a.task_id ? `data-goto-task="${esc(a.task_id)}"` : "";
+      return `<div class="att-row ${sev}" ${link} title="点击跳转到该任务">
+        <i class="bi ${icon}"></i>
+        <div class="att-body">
+          <div class="att-title">${esc(a.title || "-")}</div>
+          <div class="att-detail">${esc(a.detail || "")}</div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  /** 容量与增长：磁盘占用 + 近 7 天备份增量 + 按当前增速的可用天数预测。 */
+  function _capacityHtml(cap) {
+    if (!cap || cap.total_bytes == null) return '<div class="dist-empty">暂无容量数据</div>';
+    const pct = cap.used_pct || 0;
+    const cls = pct >= 90 ? "hd-bad" : pct >= 70 ? "hd-warn" : "hd-good";
+    const eta = cap.eta_days != null
+      ? (cap.eta_days > 3650 ? "> 10 年" : `${cap.eta_days} 天`)
+      : "—";
+    return `<div class="cap-block">
+      <div class="hd-label"><i class="bi bi-hdd"></i> 备份目录所在磁盘</div>
+      <div class="hd-bar"><span class="${cls}" style="width:${Math.min(pct, 100)}%"></span></div>
+      <div class="hd-meta"><b>${pct}%</b><span class="text-muted">已用 ${esc(cap.used_human || "-")} / 可用 ${esc(cap.free_human || "-")}</span></div>
+    </div>
+    <div class="cap-grid">
+      <div><span class="text-muted">备份产物</span><b>${esc(cap.backup_human || "-")}</b></div>
+      <div><span class="text-muted">近 7 天增量</span><b>${esc(cap.growth_7d_human || "-")}</b></div>
+      <div><span class="text-muted">预计可用</span><b>${esc(eta)}</b></div>
+    </div>`;
+  }
+
+  /** 实时保护（CDP / 日志流）运行状态。 */
+  function _rtHtml(rt) {
+    if (!rt || !rt.total) return '<div class="dist-empty">未启用实时保护任务</div>';
+    return `<div class="rt-head">
+        <span class="rt-pill ok"><i class="bi bi-broadcast"></i> 正常 ${rt.running || 0}</span>
+        <span class="rt-pill bad"><i class="bi bi-exclamation-circle"></i> 异常 ${rt.degraded || 0}</span>
+        <span class="text-muted">共 ${rt.total} 个</span>
+      </div>` +
+      (rt.items || []).map((it) => `<div class="rt-row">
+          <span class="rt-dot ${it.status === "running" ? "ok" : "bad"}"></span>
+          <span class="rt-name">${esc(it.name)}</span>
+          <span class="text-muted rt-reason" title="${esc(it.reason || "")}">${esc((it.reason || it.status || "").slice(0, 28))}</span>
+        </div>`).join("");
+  }
+
+  /** 即将执行的调度任务。 */
+  function _nextRunsHtml(rows) {
+    if (!rows || !rows.length) return '<div class="dist-empty">暂无已排程任务</div>';
+    return rows.map((r) => `<div class="nr-row">
+        <span class="nr-name">${esc(r.name)}</span>
+        <span class="nr-time">${esc(fmtTime(r.next_at))}</span>
+      </div>`).join("");
+  }
+
   async function initDashboard() {
     const d = await api("GET", "/api/dashboard");
 
@@ -233,6 +335,15 @@
       const s = ds.stats || {};
       $("st_dedup_ratio").textContent = (s.dedup_ratio_pct != null ? s.dedup_ratio_pct : 0) + "%";
       $("st_dedup_saved").textContent = s.saved_bytes_human != null ? s.saved_bytes_human : "-";
+      // 口径说明：该比例按 (逻辑量-物理量)/逻辑量 计算，含压缩收益；
+      // 样本块数很少时（如刚启用）比例不可外推，需明示，避免误读。
+      const blocks = s.unique_blocks || s.total_references || 0;
+      const $dt = $("st_dedup_tail");
+      if ($dt) {
+        $dt.textContent = blocks
+          ? `压缩+重删，基于 ${blocks} 个块样本`
+          : "暂无重删样本";
+      }
     } catch (e) {
       $("st_dedup_ratio").textContent = "-";
       $("st_dedup_saved").textContent = "-";
@@ -289,6 +400,258 @@
           return _distRow(v, d.status_counter[k], stTotal, STATUS_COLOR[k] || "#94a3b8");
         }).join("")
       : '<div class="dist-empty">暂无数据</div>';
+
+    // ---- 保护态势 & RPO 合规（第二排卡片） ----
+    const prot = d.protection || {};
+    setTxt("st_protected", `${prot.protected ?? 0}/${prot.enabled ?? 0}`);
+    setTxt("st_coverage", `${prot.coverage_pct ?? 0}%`);
+    const rpo = d.rpo || {};
+    setTxt("st_rpo_rate", `${rpo.rate_pct ?? 0}%`);
+    setTxt("st_rpo_tail", `${rpo.violated ?? 0} 个任务超出 RPO`);
+    const att = d.attention || [];
+    const highN = att.filter((a) => a.severity === "high").length;
+    setTxt("st_risk", highN);
+    setTxt("st_risk_tail", highN ? "需立即处理" : "无高危项");
+    const rec = d.recovery || {};
+    setTxt("st_recovery", rec.points ?? 0);
+    setTxt("st_recovery_tail", rec.latest_at ? `最新 ${fmtTime(rec.latest_at)}` : "暂无恢复点");
+
+    // ---- 近 7 天趋势 ----
+    const $trend = $("trendChart");
+    if ($trend) $trend.innerHTML = _trendChart(d.trend);
+
+    // ---- AI 风险告警概览（点击进 /alert 页看明细） ----
+    const al = d.alerts || {};
+    setHtml("alertSummary", (al.total || al.critical || al.high)
+      ? `<a href="/alert" class="rt-pill ${(al.critical || al.high) ? "bad" : "ok"}"
+           title="AI 风险预测：严重 ${al.critical || 0} / 高 ${al.high || 0} / 中 ${al.medium || 0}">
+           <i class="bi bi-robot"></i> 告警 ${al.critical || 0}/${al.high || 0}
+         </a>`
+      : "");
+
+    // ---- 需要关注 ----
+    const $att = $("attentionList");
+    if ($att) {
+      $att.innerHTML = _attentionList(att);
+      $att.querySelectorAll("[data-goto-task]").forEach((el) => {
+        el.addEventListener("click", () => {
+          const tid = el.getAttribute("data-goto-task");
+          if (tid) location.href = `/tasks?focus=${encodeURIComponent(tid)}`;
+        });
+      });
+    }
+
+    // ---- 容量 / 实时 / 即将执行 ----
+    setHtml("capacityBox", _capacityHtml(d.capacity));
+    setHtml("rtBox", _rtHtml(d.rt));
+    setHtml("nextRunsBox", _nextRunsHtml(d.next_runs));
+
+    // ---- 可信度四指标（演练通过率 / 副本复制成功率 / 环比 / 保护对象覆盖率） ----
+    _renderTrustMetrics(d);
+    document.querySelectorAll("[data-metric]").forEach(function (el) {
+      el.addEventListener("click", function () {
+        _showMetricDetail(el.getAttribute("data-metric"), d);
+      });
+    });
+  }
+
+  /** 可信度四指标卡片渲染（数值全部来自后端真实统计）。 */
+  function _renderTrustMetrics(d) {
+    // ① 恢复演练通过率
+    const dr = d.drills || {};
+    setTxt("st_drill_rate", dr.pass_rate_pct == null ? "暂无演练" : dr.pass_rate_pct + "%");
+    const dTail = $("st_drill_tail");
+    if (dTail) {
+      const parts = [];
+      if (dr.finished) parts.push((dr.passed || 0) + "/" + dr.finished + " 次通过");
+      if (dr.last_at) parts.push("最近 " + fmtTime(dr.last_at));
+      if (dr.is_overdue) parts.push(dr.overdue_days == null ? "从未演练" : "超期 " + dr.overdue_days + " 天");
+      dTail.textContent = parts.join(" · ") || "尚无演练记录";
+      dTail.className = "stat-sub " + (dr.is_overdue ? "risk" : (dr.finished ? "ok" : ""));
+    }
+
+    // ② 副本 / 异地复制成功率
+    const rp = d.replication || {};
+    setTxt("st_rep_rate", rp.rate_pct == null ? (rp.has_remote_target ? "-" : "未配置") : rp.rate_pct + "%");
+    const rTail = $("st_rep_tail");
+    if (rTail) {
+      if (!rp.has_remote_target) {
+        rTail.textContent = "未启用远端存储目标";
+        rTail.className = "stat-sub warn";
+      } else {
+        rTail.textContent = "近 " + (rp.window_days || 7) + " 天 " + (rp.replicated || 0) + "/" + (rp.total || 0) + " 已复制"
+          + (rp.not_replicated ? "，" + rp.not_replicated + " 未复制" : "");
+        rTail.className = "stat-sub " + (rp.not_replicated ? "risk" : "ok");
+      }
+    }
+
+    // ③ 环比（本周 vs 上周）
+    const wow = d.wow || {};
+    const cur = wow.current || {}, prev = wow.previous || {};
+    const delta = wow.delta_pp;
+    const $wow = $("st_wow");
+    if ($wow) {
+      if (delta == null) {
+        $wow.textContent = cur.rate_pct == null ? "-" : cur.rate_pct + "%";
+      } else {
+        const col = delta > 0 ? "var(--success)" : (delta < 0 ? "var(--error)" : "#334155");
+        const ico = delta > 0 ? "arrow-up" : (delta < 0 ? "arrow-down" : "dash");
+        $wow.innerHTML = '<span style="color:' + col + '"><i class="bi bi-' + ico + '"></i> '
+          + (delta >= 0 ? "+" : "") + delta + "pp</span>";
+      }
+    }
+    const wTail = $("st_wow_tail");
+    if (wTail) {
+      wTail.textContent = "本周 " + (cur.rate_pct == null ? "-" : cur.rate_pct + "%")
+        + " · 上周 " + (prev.rate_pct == null ? "-" : prev.rate_pct + "%");
+      wTail.className = "stat-sub " + (delta == null ? "" : (delta > 0 ? "ok" : (delta < 0 ? "risk" : "")));
+    }
+
+    // ④ 保护对象覆盖率（实例级为主口径，库级见明细）
+    const ob = d.objects || {};
+    const dbL = ob.db || {}, inL = ob.instance || {};
+    setTxt("st_obj_cov", inL.rate_pct == null ? "-" : inL.rate_pct + "%");
+    const oTail = $("st_obj_tail");
+    if (oTail) {
+      oTail.textContent = "实例 " + (inL.covered || 0) + "/" + (inL.total || 0)
+        + " · 库 " + (dbL.covered || 0) + "/" + (dbL.total || 0);
+      oTail.className = "stat-sub " + ((inL.uncovered || dbL.uncovered) ? "risk" : "ok");
+    }
+  }
+
+  const METRIC_TITLES = {
+    drills: "恢复演练通过率 · 明细",
+    replication: "副本/异地复制成功率 · 明细",
+    wow: "成功率环比 · 近两周对比",
+    objects: "保护对象覆盖率 · 未覆盖清单",
+  };
+
+  /** 打开指标明细弹窗。 */
+  function _showMetricDetail(metric, d) {
+    const titleEl = $("metricModalTitle"), bodyEl = $("metricModalBody");
+    if (!titleEl || !bodyEl) return;
+    titleEl.textContent = METRIC_TITLES[metric] || "指标明细";
+    bodyEl.innerHTML = _metricDetailHtml(metric, d);
+    const el = document.getElementById("metricModal");
+    if (el && window.bootstrap && window.bootstrap.Modal) {
+      window.bootstrap.Modal.getOrCreateInstance(el).show();
+    }
+  }
+
+  /** 指标明细内容（全部取后端真实统计，不做前端推算）。 */
+  function _metricDetailHtml(metric, d) {
+    if (metric === "drills") {
+      const dr = d.drills || {};
+      const over = dr.is_overdue
+        ? (dr.overdue_days == null ? "，从未演练" : "，已超期 " + dr.overdue_days + " 天")
+        : "，周期内正常";
+      const rows = (dr.items || []).map(function (it) {
+        return "<tr><td>" + esc(it.name || "-") + "</td><td>" + statusBadge(it.status) + "</td><td>"
+          + (it.score == null ? "-" : esc(String(it.score))) + "</td><td class=\"col-time\">"
+          + esc(fmtTime(it.finished_at)) + "</td></tr>";
+      }).join("");
+      return '<div class="metric-kv">'
+        + '<div><span>通过率</span><b>' + (dr.pass_rate_pct == null ? "-" : dr.pass_rate_pct + "%") + "</b></div>"
+        + '<div><span>通过 / 已出结果</span><b>' + (dr.passed || 0) + " / " + (dr.finished || 0) + "</b></div>"
+        + '<div><span>平均得分</span><b>' + (dr.avg_score == null ? "-" : dr.avg_score) + "</b></div>"
+        + '<div><span>最近演练</span><b>' + (dr.last_at ? esc(fmtTime(dr.last_at)) : "无") + "</b></div>"
+        + "</div>"
+        + '<div class="metric-hint">演练周期目标 ' + (dr.interval_days || 90) + " 天" + over
+        + "；待执行 " + Math.max((dr.total || 0) - (dr.finished || 0), 0) + " 次不计入通过率分母。</div>"
+        + '<table class="table table-sm metric-table mb-0"><thead><tr><th>演练名称</th><th>状态</th><th>得分</th><th>完成时间</th></tr></thead><tbody>'
+        + (rows || '<tr><td colspan="4" class="text-muted text-center py-3">暂无演练记录</td></tr>')
+        + "</tbody></table>";
+    }
+    if (metric === "replication") {
+      const rp = d.replication || {};
+      const failRows = (rp.failed_targets || []).map(function (t) {
+        return "<tr><td>" + esc(t.name || "-") + "</td><td><code>" + esc(t.type || "-") + "</code></td>"
+          + '<td class="text-danger">' + esc(t.last_error || "-") + "</td></tr>";
+      }).join("");
+      const rows = (rp.unreplicated_items || []).map(function (it) {
+        return "<tr><td>" + esc(it.task_name || "-") + "</td><td class=\"col-time\">"
+          + esc(fmtTime(it.started_at)) + "</td><td>" + esc(it.size_human || "-") + "</td><td><code>"
+          + esc(it.storage_tier || "local") + "</code></td></tr>";
+      }).join("");
+      const tgtList = (rp.targets || []).map(function (t) {
+        return esc(t.name || t.type || "-") + "(" + esc(t.type || "") + ")";
+      }).join("、") || "无";
+      return '<div class="metric-kv">'
+        + '<div><span>成功率</span><b>' + (rp.rate_pct == null ? "未配置远端目标" : rp.rate_pct + "%") + "</b></div>"
+        + '<div><span>近 ' + (rp.window_days || 7) + " 天成功备份</span><b>" + (rp.total || 0) + " 份</b></div>"
+        + '<div><span>已复制到远端</span><b>' + (rp.replicated || 0) + "</b></div>"
+        + '<div><span>仅本地未复制</span><b>' + (rp.not_replicated || 0) + "</b></div>"
+        + "</div>"
+        + '<div class="metric-hint">启用中的存储目标：' + tgtList
+        + "；判定依据为备份记录的 storage_tier（含 minio/s3/tape 视为已复制）。</div>"
+        + (failRows ? '<h6 class="mb-2 text-danger">存储目标最近错误</h6>'
+          + '<table class="table table-sm metric-table"><thead><tr><th>目标</th><th>类型</th><th>最近错误</th></tr></thead><tbody>'
+          + failRows + "</tbody></table>" : "")
+        + '<h6 class="mb-2">未复制到二级存储的备份（最新 10 条）</h6>'
+        + '<table class="table table-sm metric-table mb-0"><thead><tr><th>任务</th><th>备份时间</th><th>大小</th><th>存储层级</th></tr></thead><tbody>'
+        + (rows || '<tr><td colspan="4" class="text-muted text-center py-3">无未复制记录</td></tr>')
+        + "</tbody></table>";
+    }
+    if (metric === "wow") {
+      const wow = d.wow || {}, c = wow.current || {}, p = wow.previous || {};
+      const cmp = function (label, w) {
+        return "<tr><td>" + esc(label) + "</td><td class=\"col-time\">"
+          + esc(w.rate_pct == null ? "-" : w.rate_pct + "%") + "</td><td>" + (w.ok || 0)
+          + '</td><td class="text-danger">' + (w.bad || 0) + "</td><td>" + (w.total || 0) + "</td></tr>";
+      };
+      const delta = wow.delta_pp;
+      const dcol = delta == null ? "#334155" : (delta > 0 ? "#047857" : (delta < 0 ? "#b91c1c" : "#334155"));
+      return '<div class="metric-kv">'
+        + '<div><span>本周成功率</span><b>' + (c.rate_pct == null ? "-" : c.rate_pct + "%") + "</b></div>"
+        + '<div><span>上周成功率</span><b>' + (p.rate_pct == null ? "-" : p.rate_pct + "%") + "</b></div>"
+        + '<div><span>环比变化</span><b style="color:' + dcol + '">'
+        + (delta == null ? "-" : ((delta >= 0 ? "+" : "") + delta + "pp")) + "</b></div>"
+        + '<div><span>本周窗口</span><b>' + esc(wow.current_label || "-") + "</b></div>"
+        + "</div>"
+        + '<table class="table table-sm metric-table mb-0"><thead><tr><th>窗口</th><th>成功率</th><th>成功</th><th>失败</th><th>总记录</th></tr></thead><tbody>'
+        + cmp("本周（" + (wow.current_label || "") + "）", c)
+        + cmp("上周（" + (wow.previous_label || "") + "）", p)
+        + "</tbody></table>";
+    }
+    if (metric === "objects") {
+      const ob = d.objects || {}, dbL = ob.db || {}, inL = ob.instance || {};
+      const instRows = (inL.items || []).map(function (it) {
+        return '<tr><td><code>' + esc(it.host || "-") + "</code></td><td>" + (it.tasks || 0)
+          + "</td><td>" + (it.databases || 0) + "</td></tr>";
+      }).join("");
+      const dbRows = (dbL.items || []).map(function (it) {
+        return '<tr><td><code>' + esc(it.host || "-") + "</code></td><td>" + esc(it.db_name || "-")
+          + "</td><td>" + (it.tasks || 0) + "</td></tr>";
+      }).join("");
+      return '<div class="metric-kv">'
+        + '<div><span>实例覆盖率</span><b>' + (inL.rate_pct == null ? "-" : inL.rate_pct + "%")
+        + "（" + (inL.covered || 0) + "/" + (inL.total || 0) + "）</b></div>"
+        + '<div><span>库覆盖率</span><b>' + (dbL.rate_pct == null ? "-" : dbL.rate_pct + "%")
+        + "（" + (dbL.covered || 0) + "/" + (dbL.total || 0) + "）</b></div>"
+        + '<div><span>未保护实例</span><b>' + (inL.uncovered || 0) + "</b></div>"
+        + '<div><span>未保护库</span><b>' + (dbL.uncovered || 0) + "</b></div>"
+        + "</div>"
+        + '<div class="metric-hint">按（主机, 库名）归并为库级对象、按主机归并为实例对象——同一库多任务只算一个对象，避免重复计数虚高覆盖率。</div>'
+        + '<h6 class="mb-2">未保护实例</h6>'
+        + '<table class="table table-sm metric-table"><thead><tr><th>主机</th><th>任务数</th><th>库数</th></tr></thead><tbody>'
+        + (instRows || '<tr><td colspan="3" class="text-muted text-center py-3">全部实例均有成功备份</td></tr>')
+        + "</tbody></table>"
+        + '<h6 class="mb-2">未保护库（最新 10 个）</h6>'
+        + '<table class="table table-sm metric-table mb-0"><thead><tr><th>主机</th><th>库名</th><th>任务数</th></tr></thead><tbody>'
+        + (dbRows || '<tr><td colspan="3" class="text-muted text-center py-3">全部库均有成功备份</td></tr>')
+        + "</tbody></table>";
+    }
+    return '<div class="metric-hint">暂无明细</div>';
+  }
+
+  /** 安全写文本（容器可能在新旧模板间缺失）。 */
+  function setTxt(id, val) {
+    const el = $(id);
+    if (el) el.textContent = val;
+  }
+  function setHtml(id, html) {
+    const el = $(id);
+    if (el) el.innerHTML = html;
   }
 
   // ------------------------- 任务管理 -------------------------
@@ -1217,7 +1580,7 @@
   async function loadTasks() {
     const tasks = (await api("GET", "/api/tasks?db_type_exclude=file")) || [];
     $("taskTable").innerHTML = tasks.map((t) =>
-      `<tr>
+      `<tr data-task-id="${t.id}">
         <td>${t.id}</td>
         <td>${esc(t.biz_label || "-")}</td>
         <td>${esc(t.name)}</td>
@@ -1236,6 +1599,22 @@
         </td>
       </tr>`).join("") ||
       '<tr><td colspan="11" class="text-muted text-center">暂无任务，点击右上角“新建任务”</td></tr>';
+    _focusTaskRow();
+  }
+
+  /** 从首页「需要关注」跳转过来时（/tasks?focus=<任务id>）滚动并高亮该行。 */
+  function _focusTaskRow() {
+    try {
+      // 只保留数字，避免任意字符串拼进选择器
+      const tid = (new URLSearchParams(location.search).get("focus") || "").replace(/\D/g, "");
+      if (!tid) return;
+      const row = document.querySelector(`#taskTable tr[data-task-id="${tid}"]`);
+      if (!row) return;
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.style.transition = "background-color .2s ease";
+      row.style.backgroundColor = "#fff3cd";
+      setTimeout(() => { row.style.backgroundColor = ""; }, 3000);
+    } catch (e) { /* 定位失败不影响列表本身 */ }
   }
 
   window.runTask = async (id) => {
