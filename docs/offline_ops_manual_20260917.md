@@ -148,6 +148,13 @@ setsid nohup bash start.sh > /tmp/aidbm.log 2>&1 < /dev/null &
 
 ### 5.5 Oracle
 
+> 上线必读：Oracle 的备份/恢复链路**没有端到端验证报告**（唯一专项报告 `docs/oracle_backup_test_report_2026-08-12.md` 结论 Partial，19c 连通性 Pass 但备份执行因缺少客户端未跑通）。
+> 因此本节条目是**既往实战经验**，不是当前版本的验收结论——首次对接客户 Oracle 环境时，必须按 §4 完整跑一遍闭环，并把结果与本节的差异补充回来。
+> 好消息是：当时的"仿真占位成功"假成功路径已硬化为失败（见功能清单 §3.7.5），现在缺客户端会**明确报错**而不是假装成功。
+
+常见报错 `缺少必要客户端/连接，无法执行真实备份`：说明平台侧/远端找不到 `expdp` 或 `rman`。
+处置顺序（均不改代码）：① 任务高级选项 `tool_path` 填 Oracle 的 `bin` 目录；② 确认远端预检用 `oracle` 用户探测（服务端工具常只在 oracle 用户 profile 可见）；③ 用 `resolve_remote_tool` 的目录枚举思路确认实际路径（`/u01/app/oracle/product/*/*/bin`）。
+
 | 症状 | 处置 |
 |---|---|
 | ORA-01109（数据库未打开） | 19c 重启后 PDB 可能回落 MOUNTED，平台已加自动 `ALTER PLUGGABLE DATABASE ALL OPEN`；手工场景先开 PDB |

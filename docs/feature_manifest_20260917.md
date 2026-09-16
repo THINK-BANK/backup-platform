@@ -76,7 +76,7 @@
 | PostgreSQL | `core/engines/postgresql.py` | `pg_dump` / `pg_dumpall` / `pg_basebackup` 物理、`pg_restore` | ✅ 14.12 实跑 |
 | 金仓 KingbaseES | `core/engines/kingbase.py` | `sys_dump` / `sys_dumpall` / `sys_basebackup`，V8/V9R1/V9R3 目录表差异已兼容 | ✅ 137 与 133 实跑 |
 | 达梦 DM8 | `core/engines/dameng.py` | `dexp` / `dimp`、联机 `BACKUP DATABASE FULL`、`dmrman`、DBMS_LOGMNR 日志解析 | ✅ 137 实跑 |
-| Oracle | `core/engines/oracle.py` | `expdp` / `impdp` / RMAN（含 PITR、归档备份），11g/19c 兼容 | ✅ 129(11g服务名) 与 158(19c) 实跑 |
+| Oracle | `core/engines/oracle.py` | `expdp` / `impdp` / RMAN（含 PITR、归档备份），代码内有 11g/19c 兼容分支 | ⚠️ **无端到端验证报告**：唯一专项报告 `oracle_backup_test_report_2026-08-12.md` 结论为 Partial（19c 连通性 Pass，但备份执行因缺 Oracle Client 降级为仿真 `"仿真备份(占位)成功；expdp 客户端不可用"`），此后无备份/恢复 E2E 落盘凭证。仅类型映射层面有覆盖（1281 组冒烟含 Oracle 源） |
 | SQL Server | `core/engines/sqlserver.py` | 官方 T-SQL `BACKUP DATABASE` FULL/DIFF/LOG、`RESTORE ... WITH MOVE,REPLACE`、`RESTORE VERIFYONLY WITH CHECKSUM` | ✅ 2019 CU27 实跑 |
 | MongoDB | `core/engines/mongodb.py` | `mongodump` / `mongorestore`（含 archive/压缩） | ⚠️ 代码已实现，**本次盘点未见端到端验证记录** |
 | Redis | `core/engines/redis.py` | RDB 备份 | ⚠️ 代码已实现，**未见验证记录** |
@@ -123,6 +123,8 @@ CDC/实时链路保留了一条「仿真降级」实现：`core/cdc/simulated.py
 2. 验收时打开 `/realtime`，**不得出现「仿真」徽标**；
 3. 一旦出现徽标，说明某条真实链路的依赖没随镜像/离线包带上（缺模块 → import 失败 → 降级），查 import 错误见运维手册 §5.7；
 4. 仿真产生的恢复点**不得**作为 RPO/RTO 承诺或恢复演练通过的证据。
+5. **备份/恢复引擎侧已无假成功风险**（重要澄清，避免误判）：各引擎仍保留名为 `_simulate_backup` / `_simulate_restore` 的历史方法，但自 2026-08-14 起实现已硬化——`core/engines/base.py` 中它们一律返回 `success=False, status=FAILED, message="缺少必要客户端/连接，无法执行真实备份..."`，**不再产出假产物**。因此引擎侧出现这些名字**不是**仿真，缺客户端时会如实失败。真正会产生假数据的只有上面这条 CDC 通道。
+   > 历史背景：2026-08-12 的 Oracle 测试报告记录了 `message = "仿真备份(占位)成功；expdp 客户端不可用"`——那就是这条旧路径造成的**假成功**，现已不可能复现；但该报告同时说明**真实 Oracle 备份当时并未跑通**，此结论至今没有新的报告推翻（见 §3.2 与 §9）。
 
 ### 3.11 存储与数据生命周期
 
@@ -266,6 +268,7 @@ grep -rhoE "os\.(getenv|environ\.get)\(['\"][A-Z_0-9]+" core api config.py app.p
 | 恶意代码扫描 | 未实现（离线无病毒库） | 只能做启发式异常检测（P1 路线） |
 | 同步：双向 / DDL 同步 | 未实现 | 单向数据流 |
 | MongoDB / Redis / Neo4j / 文件备份 / VM | 无端到端验证记录 | 上线前必须真实演练 |
+| **Oracle 备份 / 恢复 / RMAN / 归档实时** | 唯一专项报告（2026-08-12）结论为 **Partial**：19c 连通性 Pass，但备份执行因本机缺 Oracle Client **降级为仿真**；此后无端到端报告 | **上线前必须在客户真实 Oracle 环境跑通闭环**（备份→拉回→恢复→校验），19c 与 11g 各一轮，并补恢复校验（impdp SQLFILE / RMAN VALIDATE） |
 | 委托 Global 去重为全局单实例 | 依赖 `dedup_index` | 元库损坏需重建索引 |
 | AI 助手依赖外部 LLM | 离线环境不可用 | 默认关闭，非卖点 |
 | 全量 pytest 存在用例间共享临时库污染 | 170+ failed（既有，非功能缺陷） | 见下方「回归基线」 |
