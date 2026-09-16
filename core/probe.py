@@ -307,6 +307,56 @@ def _probe_unimplemented(_h, _p, _u, _pw, _db, _t):
     return None, "该类型未实现客户端探测，跳过"
 
 
+def _probe_neo4j(h, p, u, pw, db_name, t):
+    """Neo4j 连通性：cypher-shell 优先，回退 HTTP 事务接口（/db/<name>/tx/commit）。
+
+    cypher-shell 缺失时用 Neo4j 官方 HTTP API 做一次只读的 Cypher 调用，
+    不落任何数据、不改任何状态；两条路都不可用时返回「未知」，不误报警。
+    """
+    port = p or 7687
+    database = db_name or "neo4j"
+    client = _first_client("cypher-shell")
+    if client:
+        env = os.environ.copy()
+        env["NEO4J_USERNAME"] = u or "neo4j"
+        env["NEO4J_PASSWORD"] = pw or ""
+        rc, out, err = _run(
+            [client, "-a", f"bolt://{h}:{port}", "-d", database,
+             "--non-interactive", "RETURN 1 AS ok;"], env, t + 10)
+        if rc == 0:
+            return True, "Neo4j 连接正常（cypher-shell，bolt）"
+        return False, ((out + err).strip()[:200] or "Neo4j 连接失败（cypher-shell）")
+
+    # HTTP 通道（Neo4j 默认 7473/7474；bolt 端口 -1 的常见部署 = 7474）
+    http_port = 7474
+    try:
+        if int(port) in (7474, 7473):
+            http_port = int(port)
+    except (TypeError, ValueError):
+        pass
+    try:
+        import base64
+        import json as _json
+        import urllib.request as _req
+
+        url = f"http://{h}:{http_port}/db/{database}/tx/commit"
+        payload = _json.dumps({
+            "statements": [{"statement": "RETURN 1 AS ok"}]
+        }).encode("utf-8")
+        req = _req.Request(url, data=payload,
+                           headers={"Content-Type": "application/json"})
+        if u or pw:
+            token = base64.b64encode(f"{u or 'neo4j'}:{pw or ''}".encode()).decode()
+            req.add_header("Authorization", "Basic " + token)
+        with _req.urlopen(req, timeout=max(3, int(t))) as resp:
+            body = _json.loads(resp.read().decode("utf-8", "ignore"))
+        if body.get("errors"):
+            return False, "Neo4j 返回错误: " + str(body["errors"][0].get("message", ""))[:160]
+        return True, f"Neo4j 连接正常（HTTP API :{http_port}，db={database}）"
+    except Exception as e:
+        return None, f"缺少 cypher-shell 且 HTTP 探测失败（{str(e)[:120]}），无法验证连接"
+
+
 # 值为 (必需客户端列表, 探测函数)。
 # 客户端列表为空表示该探测函数自带「驱动优先 + CLI 回退 + 缺失即未知」逻辑（T06）。
 # mysql/postgresql/redis/mongodb 的 CLI 为空列表：容器镜像零安装原则只含
@@ -321,6 +371,7 @@ _PROBES = {
     "oracle": ([], _probe_oracle),
     "kingbase": ([], _probe_kingbase),
     "dameng": ([], _probe_dameng),
+    "neo4j": ([], _probe_neo4j),
 }
 
 

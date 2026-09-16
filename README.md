@@ -10,7 +10,7 @@
 解决**人工运维效率低、备份失效难发现、故障排查慢、异构数据适配难**等行业痛点，
 真正实现数据灾备的**智能化、自动化、安全化、全域化**。
 
-Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦） · SQL Server · Redis · MongoDB · 文件
+Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦） · SQL Server · Redis · MongoDB · Neo4j · 文件
 
 **备份 · 恢复 · PITR · 数据迁移 · 数据同步 · 数据对比 · 预校验 · 克隆 · 演练 · 巡检 · AI 告警**
 
@@ -42,7 +42,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 | 能力 | 说明 |
 |---|---|
-| 9 个数据库备份引擎 + 文件备份 | MySQL / MariaDB / PostgreSQL / Kingbase / DM / SQL Server / Oracle / Redis / MongoDB + 文件（本地 + 远程 SSH 无 Agent）|
+| 10 个数据库备份引擎 + 文件备份 | MySQL / MariaDB / PostgreSQL / Kingbase / DM / SQL Server / Oracle / Redis / MongoDB / Neo4j + 文件（本地 + 远程 SSH 无 Agent）|
 | 备份类型 | 全量 / 增量 / 差异（SQL Server）/ 快照 / 合成全量 / 组合（全量+增量双调度）|
 | MySQL 物理增量备份与增量链恢复 | XtraBackup 增量备份；恢复时基备 prepare → 逐层合并增量 → 临时实例校验，自动处理压缩产物与增量链 |
 | 达梦物理增量备份 | 联机 `BACKUP INCREMENT BACKUPSET`，增量备份集自动拉回 |
@@ -54,6 +54,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 | 全局重删 | 内容 sha256 索引 + 引用计数 |
 | 存储池加密 | AES-256-GCM 信封式，密钥来源：环境变量 / 系统设置托管 / 外部 KMS |
 | 备份插件 | 服务端插件市场（XtraBackup / MariaDB Backup / pgBackRest / MongoDB Tools 等），支持离线包安装 |
+| 虚拟机备份（整机） | PVE / KVM(libvirt) / ESXi / Hyper-V 纳管 → 保护策略 → 恢复点（PITR）→ 原地还原 / 克隆新 VM / 自动恢复验证（SureBackup 式）；复用平台既有调度、保留、存储分层与告警 |
 | 可插拔数据库类型 | 「数据库类型」页界面新增：填脚本模板（备份/增量/全实例/恢复/校验/列库/连通性）+ 能力声明，运行时渲染为 `CustomDBEngine` 注入引擎注册表，与内置引擎同一调度链路；`{{KEY}}` 占位渲染为 `${PLATFORM_KEY}`，脚本不落明文密码 |
 | 远端工具动态发现 | 数据库服务用户 profile → 登录 shell → 常见目录枚举 → find，不写死路径；支持 `tool_path` 手动兜底 |
 | 零安装执行 | SSH 远程优先（用数据库自带工具）→ 平台推送临时副本（/tmp 执行即清理）→ 回退平台服务端执行 |
@@ -413,6 +414,18 @@ docker build -t backup-platform:local .
 | SQL Server | sqlcmd | sqlcmd | BACKUP/RESTORE DATABASE；SQLCMDPASSWORD 注入 |
 | Redis | redis-cli --rdb | （替换 rdb + 自动重启） | REDISCLI_AUTH 传密码 |
 | MongoDB | mongodump | mongorestore | --archive 流式拉回 |
+| Neo4j | neo4j-admin database dump / backup、APOC 导出 | neo4j-admin database load / restore、apoc.import.* | 三通道：离线 dump、企业版在线 backup（不停机、可增量）、APOC 在线导出（Cypher/JSON/CSV）；默认端口 7687 |
+
+### 虚拟机备份支持矩阵（/vm）
+
+| 虚拟化平台 | 接入方式 | 备份通道 | 增量能力 | 克隆新 VM |
+|---|---|---|---|---|
+| Proxmox VE | HTTPS API（账号密码 / API Token） | `vzdump`；PBS 存储时走 PBS 备份 | 备份存储为 PBS 时支持块级增量，否则按全量执行（如实说明，不伪造增量） | 支持（可隔离网络、改 MAC、自动开机、TTL 自动销毁） |
+| KVM / libvirt | SSH + `virsh` | 快照/检查点 + 磁盘镜像导出 | 支持增量（`virsh backup-begin` 可用时） | 支持 |
+| VMware ESXi | SSH + `vim-cmd` | 关机/快照后打包 VM 目录（vmdk） | 依赖快照链，不支持时回退全量 | 支持 |
+| Hyper-V | SSH + PowerShell | `Export-VM` / 检查点导出 | 依赖检查点，不支持时回退全量 | 支持 |
+
+设计要点：**不新建平行调度体系**——每台受保护 VM 对应一条 `backup_tasks(db_type='vm')`，复用平台调度、保留策略、三级存储、生命周期与告警；恢复点（PIT）单独建链（全量 / 增量 / 合成全量），支持按时间点选择还原，并可对恢复点做自动恢复验证（拉起隔离 VM 后销毁）。
 
 **数据迁移/同步连接通道**：原生 Python 驱动优先（pymysql / psycopg2 / oracledb thin），JDBC 兜底（驱动 jar 随包，达梦/金仓/Oracle 全覆盖）。部署后运行 `python tools/check_env.py` 一键自检（服务端集中安装、客户端零安装）。
 
@@ -466,6 +479,16 @@ docker build -t backup-platform:local .
 - 默认账号请立即修改（首登会标记 `must_change_password`）；生产环境建议限制来源 IP
 
 ## 更新日志
+
+### v1.4.8（2026-09-16）
+
+- **Neo4j 图数据库备份引擎（第 10 个数据库引擎）**：三通道真实备份——官方离线 `dump`（社区版/企业版，Docker 场景按官方做法 `docker stop` → 临时容器 dump → `docker start`，避免抢 `database_lock`）、企业版在线 `backup`（不停机、`--type=DIFF` 永久增量，只拉回新增产物）、APOC 在线导出（Cypher / JSON / CSV，跨版本迁移与审计）；恢复通道一一对应（`load` / `restore` / `apoc.import.*`）。连接探测 cypher-shell 优先、回退官方 HTTP 事务接口；能力按**真实情况**声明（无物理备份通道、不支持全实例与同步）。
+- **虚拟机备份（整机，/vm）**：新增 `core/vm` 子系统——PVE / KVM(libvirt) / ESXi / Hyper-V 四种平台纳管 → 保护策略 → 恢复点（PITR，全量/增量/合成全量 + change_token 永久增量）→ 原地还原 / 克隆新 VM（隔离网络、改 MAC、TTL 自动销毁）/ **SureBackup 式自动恢复验证**（隔离网络真实拉起 VM 做心跳·端口·HTTP 健康检查，不通过不罢休）→ RPO 偏离报告。复用平台既有调度、记录、保留、存储分层与告警，虚拟化平台侧零安装零 agent。
+  > **注意：本模块尚未在真实虚拟化环境做端到端验证（无可用 PVE/ESXi/Hyper-V/libvirt 环境），暂不建议生产使用，待测试优化。**
+- **页面结构收敛**：「实时备份（PITR 准 CDP）」与「CDC 变更捕获与回放」合并为 `/realtime` 一个入口（页内标签页）；「数据库类型」并入「数据库备份」页标签页；`/cdc`、`/rt-timeline`、`/db-adapters` 旧入口保留 302 重定向并带深链参数。
+- **修复**：数据库类型面板按钮全部失效（面板内联脚本早于 `bkp-core.js` 执行，`BKP` 未定义导致初始化中断）；CDC 面板 `BKP.api` 调用签名误用与按钮选择器串绑；Neo4j 无 JDBC 通道被误判为连接故障；静态资源版本号更新。
+
+> 本次更新的完整说明（含三通道对比、VM 数据模型与支持矩阵、缺陷排查记录与后续计划）见 [readme_20260916.md](readme_20260916.md)。
 
 ### v1.4.7（2026-09-15）
 

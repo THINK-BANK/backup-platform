@@ -794,6 +794,110 @@ CREATE TABLE IF NOT EXISTS db_adapters (
 );
 
 CREATE INDEX IF NOT EXISTS idx_db_adapters_enabled ON db_adapters(enabled, db_type);
+
+-- ========== 虚拟机备份（core/vm 子系统）==========
+-- 设计取向：把「虚拟机」伪装成一种受保护对象，但复用平台的任务调度、
+-- 备份记录、备份集链、存储分层、生命周期与告警，不新建平行的调度体系。
+
+-- ① 纳管的虚拟化平台（PVE / vCenter / KVM 宿主机 / ESXi / Hyper-V）
+CREATE TABLE IF NOT EXISTS vm_hypervisors (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    provider      TEXT NOT NULL,          -- pve | libvirt_ssh | esxi_ssh | hyperv_ssh
+    endpoint      TEXT NOT NULL,          -- https://pve01:8006 / root@kvm01 / 10.0.0.5
+    username      TEXT,
+    password      TEXT,                   -- db.encrypt_secret 加密存储
+    token_id      TEXT,                   -- PVE API Token 模式
+    token_secret  TEXT,                   -- 加密存储
+    verify_ssl    INTEGER DEFAULT 0,
+    extra_config  TEXT,                   -- JSON：uri/storage/work_dir/ssh/isolate_network...
+    status        TEXT DEFAULT 'unknown', -- online | offline | error | unknown
+    version       TEXT,
+    last_check_at TEXT,
+    created_at    TEXT,
+    updated_at    TEXT
+);
+
+-- ② 受保护的虚拟机（一台 VM 一行，关联 backup_tasks 复用调度/记录/告警）
+CREATE TABLE IF NOT EXISTS vm_protected (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    hypervisor_id    INTEGER NOT NULL,
+    task_id          INTEGER,             -- → backup_tasks.id（db_type='vm'）
+    vm_ref           TEXT NOT NULL,       -- PVE:vmid / libvirt:UUID / ESXi:vmid / Hyper-V:VMId
+    vm_name          TEXT,
+    node             TEXT,                -- PVE 节点 / 宿主机
+    guest_os         TEXT,
+    power_state      TEXT,
+    disk_count       INTEGER DEFAULT 0,
+    total_size_bytes INTEGER DEFAULT 0,
+    enabled          INTEGER DEFAULT 1,
+    backup_interval_min INTEGER DEFAULT 1440,  -- 备份间隔（分钟），准 CDP 可设 5~60
+    consistency      TEXT DEFAULT 'crash',     -- crash | fs | app
+    rpo_target_min   INTEGER DEFAULT 1440,     -- RPO 目标，超限告警（Rubrik SLA 思路）
+    retention_days   INTEGER DEFAULT 30,
+    retention_count  INTEGER DEFAULT 60,
+    last_change_token TEXT,               -- CBT / dirty bitmap / checkpoint 位点
+    last_rp_at       TEXT,
+    last_status      TEXT,
+    last_message     TEXT,
+    extra_config     TEXT,                -- JSON
+    created_at       TEXT,
+    updated_at       TEXT,
+    UNIQUE(hypervisor_id, vm_ref)
+);
+
+-- ③ 恢复点（PIT）：虚拟机备份的核心资产
+CREATE TABLE IF NOT EXISTS vm_recovery_points (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    vm_id         INTEGER NOT NULL,       -- → vm_protected.id
+    task_id       INTEGER,                -- → backup_tasks.id
+    record_id     INTEGER,                -- → backup_records.id
+    set_id        INTEGER,                -- → backup_sets.id
+    parent_rp_id  INTEGER,                -- 增量链父节点；NULL 表示全量
+    rp_type       TEXT DEFAULT 'full',    -- full | incremental | synthetic_full
+    pit_at        TEXT NOT NULL,          -- 恢复点时刻（ISO8601 本地时间）
+    consistency   TEXT DEFAULT 'crash',
+    change_token  TEXT,                   -- 本次结束后的变更跟踪位点
+    parent_token  TEXT,
+    artifact_path TEXT,                   -- 平台侧落盘路径
+    remote_path   TEXT,                   -- 数据源侧原始路径（排障用）
+    size_bytes    INTEGER DEFAULT 0,
+    checksum      TEXT,
+    duration_sec  REAL DEFAULT 0,
+    verified      INTEGER DEFAULT 0,      -- SureBackup 式自动恢复验证结果
+    verify_msg    TEXT,
+    is_simulated  INTEGER DEFAULT 0,
+    expires_at    TEXT,
+    created_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_vm_rp_vm_time ON vm_recovery_points(vm_id, pit_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vm_rp_task ON vm_recovery_points(task_id);
+
+-- ④ 虚拟机作业（还原 / 克隆 / 自动恢复验证 / 到期销毁）
+CREATE TABLE IF NOT EXISTS vm_jobs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    vm_id          INTEGER,               -- → vm_protected.id
+    rp_id          INTEGER,               -- → vm_recovery_points.id
+    mode           TEXT NOT NULL,         -- restore_in_place | clone | verify | delete
+    target_node    TEXT,
+    target_name    TEXT,
+    target_ref     TEXT,                  -- 新建/操作后的对象标识
+    isolate_network INTEGER DEFAULT 1,
+    auto_start     INTEGER DEFAULT 1,
+    live           INTEGER DEFAULT 0,     -- 即时恢复
+    ttl_hours      INTEGER DEFAULT 0,     -- >0：到期自动销毁（演练克隆）
+    status         TEXT DEFAULT 'pending',-- pending|running|ready|failed|expired|deleted
+    progress       INTEGER DEFAULT 0,
+    result_json    TEXT,                  -- JSON：检查结果 / 错误信息 / 新 VM 信息
+    message        TEXT,
+    operator       TEXT,
+    started_at     TEXT,
+    finished_at    TEXT,
+    expires_at     TEXT,
+    created_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_vm_jobs_status ON vm_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_vm_jobs_vm ON vm_jobs(vm_id);
 """
 
 # ------------------------- 连接与执行 -------------------------

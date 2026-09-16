@@ -1,5 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
+<!-- 数据库备份页：任务列表 + 可插拔数据库类型（原独立一级菜单「数据库类型」已并入此处） -->
+<ul class="nav nav-tabs mb-3" id="tasksTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <a class="nav-link active" id="tabTasksBtn" data-bs-toggle="tab" href="#tabTasks" role="tab"><i class="bi bi-list-check"></i> 备份任务</a>
+  </li>
+  <li class="nav-item" role="presentation" data-perm="backup.dbtypes.manage">
+    <a class="nav-link" id="tabDbTypesBtn" data-bs-toggle="tab" href="#tabDbTypes" role="tab"
+       title="可插拔数据库类型：新增一种数据库即可直接用于备份 / 恢复"><i class="bi bi-stack"></i> 数据库类型</a>
+  </li>
+</ul>
+<div class="tab-content" id="tasksTabsContent">
+<div class="tab-pane fade show active" id="tabTasks" role="tabpanel">
 <div class="toolbar">
   <div>
     <div class="page-title">数据库备份</div>
@@ -21,6 +33,12 @@
     </table>
   </div>
 </div>
+</div><!-- /tabTasks -->
+
+<div class="tab-pane fade" id="tabDbTypes" role="tabpanel">
+  {% include "_db_adapters_panel.html" %}
+</div>
+</div><!-- /tasksTabsContent -->
 
 <!-- 任务编辑模态框 -->
 <div class="modal fade" id="taskModal" tabindex="-1">
@@ -62,6 +80,7 @@
                     <option value="sqlserver">SQL Server</option>
                     <option value="redis">Redis</option>
                     <option value="mongodb">MongoDB</option>
+                    <option value="neo4j">Neo4j</option>
                   </select>
                 </div>
                 <div class="col-md-3">

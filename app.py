@@ -306,11 +306,19 @@ def create_app() -> Flask:
     def datamining_page():
         return render_template("datamining.html", page="datamining")
 
+    @app.route("/realtime")
+    @login_required
+    def realtime_page():
+        """实时备份（CDC + CDP 合一）：PITR 恢复点时间轴 + 行级变更捕获与回放。"""
+        return render_template("realtime.html", page="realtime")
+
     @app.route("/rt-timeline")
     @login_required
     def rt_timeline_page():
-        """准 CDP 实时备份时间轴（PITR 选点与恢复）。"""
-        return render_template("rt_timeline.html", page="rt_timeline")
+        """兼容旧入口：实时备份已与 CDC 合并到 /realtime（保留 task_id 等深链参数）。"""
+        args = request.args.to_dict(flat=True)
+        args.setdefault("tab", "rt")
+        return redirect(url_for("realtime_page", **args))
 
     @app.route("/plugins")
     @login_required
@@ -318,11 +326,19 @@ def create_app() -> Flask:
         """备份依赖插件管理（一键安装 xtrabackup / percona / mariabackup / pgbackrest 等）。"""
         return render_template("plugins.html", page="plugins")
 
+    @app.route("/vm")
+    @login_required
+    def vm_page():
+        """虚拟机备份：虚拟化平台纳管 → 保护策略 → 恢复点（PITR）→ 还原 / 克隆 / 恢复验证。"""
+        return render_template("vm.html", page="vm")
+
     @app.route("/db-adapters")
     @login_required
     def db_adapters_page():
-        """可插拔数据库类型：内置 + 用户脚本模板自定义。"""
-        return render_template("db_adapters.html", page="db-adapters")
+        """兼容旧入口：数据库类型已并入「数据库备份」页的「数据库类型」标签页。"""
+        args = request.args.to_dict(flat=True)
+        args["tab"] = "dbtypes"
+        return redirect(url_for("tasks_page", **args))
 
     @app.route("/users")
     @login_required
@@ -345,8 +361,10 @@ def create_app() -> Flask:
     @app.route("/cdc")
     @login_required
     def cdc_page():
-        """CDC 实时备份：行级变更捕获 + 任意时间点回滚/重放（持续数据保护）。"""
-        return render_template("cdc.html", page="cdc")
+        """兼容旧入口：CDC 已合并到 /realtime 的「CDC 变更捕获与回放」标签页。"""
+        args = request.args.to_dict(flat=True)
+        args["tab"] = "cdc"
+        return redirect(url_for("realtime_page", **args))
 
     @app.route("/data-compare")
     @login_required

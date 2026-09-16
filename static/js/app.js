@@ -498,6 +498,8 @@
     // 注：oracle/dameng 引擎 list_databases() 返回空（需用户手工指定 schema），
     //     故展示选择器但拉取结果为空属预期，不影响 CDC 守护配置。
     refreshDbPickerVisibility();
+    // 不支持物理备份的类型（如 Neo4j）自动禁用「物理备份」下拉项
+    refreshBackupModeOptions();
     // 若是编辑任务，加载 schemas/tables 复选
     if (task && task.id && ["mysql", "mariadb", "postgresql", "kingbase", "oracle", "dameng"].includes(task.db_type)) {
       loadPickerFromExtra(task.extra_options);
@@ -533,6 +535,35 @@
     const div = $("t_db_picker");
     if (div) div.style.display = visible ? "" : "none";
   }
+
+  // 仅支持逻辑备份的类型（无数据文件级物理通道）。
+  // 与后端 core/engines/__init__.py 的 _ENGINE_META_OVERRIDE.backup_modes 保持一致。
+  const LOGICAL_ONLY_TYPES = ["neo4j"];
+
+  /** 切换数据库类型时预填默认端口（仅新建任务，编辑态不动用户已保存的端口）。 */
+  function fillDefaultPort() {
+    const t = $("t_db_type")?.value;
+    if (!t) return;
+    if ($("t_id") && $("t_id").value) return;
+    const p = META.default_ports && META.default_ports[t];
+    if (p && $("t_port")) $("t_port").value = p;
+  }
+
+  /** 逻辑-only 类型（Neo4j）禁用「物理备份」，避免选中不支持的备份方式。 */
+  function refreshBackupModeOptions() {
+    const sel = $("t_backup_mode");
+    if (!sel) return;
+    const t = $("t_db_type")?.value;
+    const phys = Array.prototype.find.call(sel.options, (o) => o.value === "physical");
+    if (!phys) return;
+    phys.disabled = LOGICAL_ONLY_TYPES.includes(t);
+    if (phys.disabled && sel.value === "physical") {
+      sel.value = "logical";
+      if (typeof toast === "function") toast("该数据库类型不支持物理备份，已切换为逻辑备份");
+    }
+    if (typeof toggleCustomBox === "function") toggleCustomBox();
+  }
+  window.refreshBackupModeOptions = refreshBackupModeOptions;
 
   // 重置 picker
   function resetPicker() {
@@ -717,6 +748,8 @@
       dbTypeEl.addEventListener("change", () => refreshDbPickerVisibility());
       // 数据库类型变化 → 重新渲染「备份文件格式」候选（各库支持的格式不同）
       dbTypeEl.addEventListener("change", () => refreshDumpFormatOptions());
+      // 数据库类型变化 → 预填默认端口（Neo4j 7687 等）+ 刷新备份方式可选项
+      dbTypeEl.addEventListener("change", () => { fillDefaultPort(); refreshBackupModeOptions(); });
       // 备份方式（逻辑/物理/自定义）变化同样影响格式可选性
       const bmEl = $("t_backup_mode");
       if (bmEl && !bmEl._fmtBound) {
@@ -795,6 +828,18 @@
     redis: [
       { v: "rdb", label: "RDB 快照（.rdb，原生唯一）", native: true,
         note: "Redis 备份走 redis-cli --rdb（或复制线上 dump.rdb），产物固定为 RDB 快照。" },
+    ],
+    neo4j: [
+      { v: "dump", label: "官方离线导出（.dump，社区版/企业版）",
+        note: "neo4j-admin database dump：官方归档、体积最小，要求数据库离线。社区版只能停整个服务/容器释放数据目录锁（STOP DATABASE 为企业版专属）；Docker 部署时平台自动「docker stop → 临时容器 dump → docker start」。" },
+      { v: "backup", label: "企业版在线备份（.backup.tar.gz，不停机/可增量）",
+        note: "neo4j-admin database backup：不停库，支持永久增量（--type=DIFF）；社区版执行会失败，平台自动回退离线 dump。" },
+      { v: "apoc_cypher", label: "APOC 在线导出 Cypher（.cypher，跨版本迁移）",
+        note: "apoc.export.cypher.all：在线导出可回灌的 Cypher 脚本，需安装 APOC 插件并开启文件导出权限。" },
+      { v: "apoc_json", label: "APOC 在线导出 JSON（.json）",
+        note: "apoc.export.json.all：在线导出 JSON，便于外部系统对接与审计。" },
+      { v: "apoc_csv", label: "APOC 在线导出 CSV（.csv.zip）",
+        note: "apoc.export.csv.all：在线导出 CSV 压缩包，便于 Excel/数仓侧处理。" },
     ],
   };
 
@@ -4223,7 +4268,11 @@
 
     // 键盘微调选点（← / →）
     document.addEventListener("keydown", (ev) => {
-      if (document.body.dataset.page !== "rt_timeline") return;
+      const rtPage = document.body.dataset.page;
+      if (rtPage !== "rt_timeline" && rtPage !== "realtime") return;
+      // 合并页（/realtime）中 CDC 标签页激活时，时间轴选点快捷键不生效
+      const rtPane = document.getElementById("tabRt");
+      if (rtPane && rtPane.offsetParent === null) return;
       if (RT.selectedIdx < 0) return;
       const tag = (ev.target && ev.target.tagName) || "";
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
@@ -4281,7 +4330,8 @@
       else if (page === "alert") await initAlert();
       else if (page === "agent") await initAgent();
       else if (page === "datamining") await initDataMining();
-      else if (page === "rt_timeline") await initRtTimeline();
+      // 实时备份（CDC + CDP 合一）：/realtime 为新入口；rt_timeline 为旧入口兼容
+      else if (page === "rt_timeline" || page === "realtime") await initRtTimeline();
     } catch (e) { toast(e.message, "danger"); }
   });
 

@@ -29,9 +29,7 @@
         <a class="nav-link {% if page=='storage' %}active{% endif %}" href="/storage" title="存储管理" data-perm="backup.storage.manage"><i class="bi bi-hdd-rack"></i> <span class="nav-label">存储管理</span></a>
         <a class="nav-link {% if page=='protection' %}active{% endif %}" href="/protection" title="备份策略" data-perm="backup.policy.manage"><i class="bi bi-shield-lock"></i> <span class="nav-label">备份策略</span></a>
         <a class="nav-link {% if page=='plugins' %}active{% endif %}" href="/plugins" title="备份依赖插件（一键安装 xtrabackup / percona / mariabackup 等）" data-perm="backup.plugins.manage"><i class="bi bi-plug"></i> <span class="nav-label">备份插件</span></a>
-        <a class="nav-link {% if page=='db-adapters' %}active{% endif %}" href="/db-adapters" title="可插拔数据库类型（界面新增一种数据库即可用于备份/恢复）" data-perm="backup.dbtypes.manage"><i class="bi bi-stack"></i> <span class="nav-label">数据库类型</span></a>
-        <a class="nav-link {% if page=='rt_timeline' %}active{% endif %}" href="/rt-timeline" title="实时备份（准 CDP）" data-perm="rt.manage"><i class="bi bi-broadcast-pin"></i> <span class="nav-label">实时备份</span></a>
-        <a class="nav-link {% if page=='cdc' %}active{% endif %}" href="/cdc" title="CDC 实时备份：行级变更捕获，任意时间点回滚/重放" data-perm="rt.manage"><i class="bi bi-broadcast"></i> <span class="nav-label">CDC 实时备份</span></a>
+        <a class="nav-link {% if page in ('rt_timeline', 'realtime', 'cdc') %}active{% endif %}" href="/realtime" title="实时备份：CDC 行级变更捕获 + CDP 恢复点时间轴（任意时间点恢复）" data-perm="rt.manage"><i class="bi bi-broadcast-pin"></i> <span class="nav-label">实时备份</span></a>
         <div class="nav-group-label">数据恢复管理</div>
         <a class="nav-link {% if page=='restore' %}active{% endif %}" href="/restore" title="数据恢复" data-perm="restore.run"><i class="bi bi-arrow-counterclockwise"></i> <span class="nav-label">数据恢复</span></a>
         <a class="nav-link {% if page=='restore-verify' %}active{% endif %}" href="/restore-verify" title="恢复校验" data-perm="restore.verify.manage"><i class="bi bi-patch-check"></i> <span class="nav-label">恢复校验</span></a>
@@ -45,6 +43,7 @@
         <a class="nav-link {% if page=='sync' %}active{% endif %}" href="/sync" title="数据同步" data-perm="dr.sync.manage"><i class="bi bi-arrow-left-right"></i> <span class="nav-label">数据同步</span></a>
         <a class="nav-link {% if page=='dr-link' %}active{% endif %}" href="/dr-link" title="容灾链路" data-perm="dr.link.manage"><i class="bi bi-diagram-3"></i> <span class="nav-label">容灾链路</span></a>
         <a class="nav-link {% if page=='clone' %}active{% endif %}" href="/clone" title="克隆服务" data-perm="dr.clone.manage"><i class="bi bi-layers"></i> <span class="nav-label">克隆服务</span></a>
+        <a class="nav-link {% if page=='vm' %}active{% endif %}" href="/vm" title="虚拟机备份（整机恢复点 / 永久增量 / 克隆新 VM）"><i class="bi bi-pc-display-horizontal"></i> <span class="nav-label">虚拟机备份</span></a>
         <div class="nav-group-label">运维</div>
         <a class="nav-link {% if page=='operations' %}active{% endif %}" href="/operations" title="运维运营分析（超长 / 超频备份统计与阈值配置）" data-perm="operations.view"><i class="bi bi-graph-up-arrow"></i> <span class="nav-label">运维运营分析</span></a>
         <a class="nav-link {% if page=='inspection' %}active{% endif %}" href="/inspection" title="巡检" data-perm="inspection.manage"><i class="bi bi-shield-check"></i> <span class="nav-label">巡检</span></a>
@@ -85,8 +84,8 @@
   </div>
 
   <script src="/static/js/bootstrap.bundle.min.js?v=2026080210"></script>
-  <script src="/static/js/bkp-core.js?v=2026091201"></script>
-  <script src="/static/js/app.js?v=2026091201"></script>
+  <script src="/static/js/bkp-core.js?v=2026091601"></script>
+  <script src="/static/js/app.js?v=2026091601"></script>
   <script>
     // 按权限隐藏菜单（每个 <a class="nav-link" data-perm="..."> 命中则可见）
     document.addEventListener("DOMContentLoaded", function () {

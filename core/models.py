@@ -2625,3 +2625,250 @@ def verify_api_token(token: str) -> Optional[dict]:
     except Exception:
         pass
     return row
+
+
+# ------------------------- 虚拟机备份（core/vm） -------------------------
+_VM_HV_FIELDS = ["name", "provider", "endpoint", "username", "password",
+                 "token_id", "token_secret", "verify_ssl", "extra_config",
+                 "status", "version", "last_check_at"]
+_VM_PROTECTED_FIELDS = [
+    "hypervisor_id", "task_id", "vm_ref", "vm_name", "node", "guest_os",
+    "power_state", "disk_count", "total_size_bytes", "enabled",
+    "backup_interval_min", "consistency", "rpo_target_min", "retention_days",
+    "retention_count", "last_change_token", "last_rp_at", "last_status",
+    "last_message", "extra_config",
+]
+_VM_RP_FIELDS = [
+    "vm_id", "task_id", "record_id", "set_id", "parent_rp_id", "rp_type",
+    "pit_at", "consistency", "change_token", "parent_token", "artifact_path",
+    "remote_path", "size_bytes", "checksum", "duration_sec", "verified",
+    "verify_msg", "is_simulated", "expires_at",
+]
+_VM_JOB_FIELDS = [
+    "vm_id", "rp_id", "mode", "target_node", "target_name", "target_ref",
+    "isolate_network", "auto_start", "live", "ttl_hours", "status", "progress",
+    "result_json", "message", "operator", "started_at", "finished_at", "expires_at",
+]
+
+
+def create_vm_hypervisor(data: dict) -> int:
+    row = {k: data.get(k) for k in _VM_HV_FIELDS}
+    now = db.now_iso()
+    row["created_at"] = now
+    row["updated_at"] = now
+    row["verify_ssl"] = 1 if row.get("verify_ssl") else 0
+    row["status"] = row.get("status") or "unknown"
+    for k in ("password", "token_secret"):
+        if row.get(k):
+            row[k] = db.encrypt_secret(row[k])
+        else:
+            row[k] = ""
+    cols = list(row.keys())
+    return db.execute(
+        "INSERT INTO vm_hypervisors ({}) VALUES ({})".format(
+            ",".join(cols), ",".join("?" * len(cols))), tuple(row.values()))
+
+
+def _vm_hv_dict(row, include_secret: bool) -> dict:
+    d = dict(row)
+    if include_secret:
+        d["password"] = db.decrypt_secret(d.get("password") or "")
+        d["token_secret"] = db.decrypt_secret(d.get("token_secret") or "")
+    else:
+        d["password"] = ""
+        d["token_secret"] = ""
+    return d
+
+
+def get_vm_hypervisor(hv_id: int, include_secret: bool = False) -> Optional[dict]:
+    row = db.query_one("SELECT * FROM vm_hypervisors WHERE id=?", (int(hv_id),))
+    return _vm_hv_dict(row, include_secret) if row else None
+
+
+def list_vm_hypervisors(include_secret: bool = False) -> list:
+    rows = db.query("SELECT * FROM vm_hypervisors ORDER BY id DESC")
+    return [_vm_hv_dict(r, include_secret) for r in rows]
+
+
+def update_vm_hypervisor(hv_id: int, data: dict) -> None:
+    updates = {k: v for k, v in data.items() if k in _VM_HV_FIELDS}
+    if not updates:
+        return
+    if "verify_ssl" in updates:
+        updates["verify_ssl"] = 1 if updates["verify_ssl"] else 0
+    for k in ("password", "token_secret"):
+        if k in updates:
+            updates[k] = db.encrypt_secret(updates[k]) if updates[k] else ""
+    updates["updated_at"] = db.now_iso()
+    sets = ", ".join("%s=?" % k for k in updates)
+    db.execute("UPDATE vm_hypervisors SET %s WHERE id=?" % sets,
+               tuple(updates.values()) + (int(hv_id),))
+
+
+def delete_vm_hypervisor(hv_id: int) -> None:
+    db.execute("DELETE FROM vm_protected WHERE hypervisor_id=?", (int(hv_id),))
+    db.execute("DELETE FROM vm_hypervisors WHERE id=?", (int(hv_id),))
+
+
+def create_vm_protected(data: dict) -> int:
+    row = {k: data.get(k) for k in _VM_PROTECTED_FIELDS}
+    now = db.now_iso()
+    row["created_at"] = now
+    row["updated_at"] = now
+    row["enabled"] = 0 if row.get("enabled") in (0, False, "0") else 1
+    row["consistency"] = row.get("consistency") or "crash"
+    for n in ("disk_count", "total_size_bytes", "backup_interval_min",
+              "rpo_target_min", "retention_days", "retention_count"):
+        v = row.get(n)
+        row[n] = int(v) if v not in (None, "") else 0
+    if row.get("task_id") in (0, "", None):
+        row["task_id"] = None
+    cols = list(row.keys())
+    return db.execute(
+        "INSERT INTO vm_protected ({}) VALUES ({})".format(
+            ",".join(cols), ",".join("?" * len(cols))), tuple(row.values()))
+
+
+def get_vm_protected(vm_id: int) -> Optional[dict]:
+    return db.query_one("SELECT * FROM vm_protected WHERE id=?", (int(vm_id),))
+
+
+def get_vm_protected_by_task(task_id: int) -> Optional[dict]:
+    return db.query_one("SELECT * FROM vm_protected WHERE task_id=?", (int(task_id),))
+
+
+def list_vm_protected(hypervisor_id: int = None, enabled_only: bool = False) -> list:
+    sql = ("SELECT p.*, h.name AS hypervisor_name, h.provider AS provider "
+           "FROM vm_protected p LEFT JOIN vm_hypervisors h ON h.id=p.hypervisor_id")
+    conds, args = [], []
+    if hypervisor_id:
+        conds.append("p.hypervisor_id=?")
+        args.append(int(hypervisor_id))
+    if enabled_only:
+        conds.append("p.enabled=1")
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY p.id DESC"
+    return db.query(sql, tuple(args))
+
+
+def update_vm_protected(vm_id: int, data: dict) -> None:
+    updates = {k: v for k, v in data.items() if k in _VM_PROTECTED_FIELDS}
+    if not updates:
+        return
+    if "enabled" in updates:
+        updates["enabled"] = 0 if updates["enabled"] in (0, False, "0") else 1
+    updates["updated_at"] = db.now_iso()
+    sets = ", ".join("%s=?" % k for k in updates)
+    db.execute("UPDATE vm_protected SET %s WHERE id=?" % sets,
+               tuple(updates.values()) + (int(vm_id),))
+
+
+def delete_vm_protected(vm_id: int) -> None:
+    db.execute("DELETE FROM vm_recovery_points WHERE vm_id=?", (int(vm_id),))
+    db.execute("DELETE FROM vm_jobs WHERE vm_id=?", (int(vm_id),))
+    db.execute("DELETE FROM vm_protected WHERE id=?", (int(vm_id),))
+
+
+def create_vm_recovery_point(data: dict) -> int:
+    row = {k: data.get(k) for k in _VM_RP_FIELDS}
+    for n in ("task_id", "record_id", "set_id", "parent_rp_id", "size_bytes"):
+        if row.get(n) in (0, "", None):
+            row[n] = None
+    row["created_at"] = db.now_iso()
+    row["rp_type"] = row.get("rp_type") or "full"
+    row["pit_at"] = row.get("pit_at") or db.now_iso()
+    row["verified"] = 1 if row.get("verified") else 0
+    row["is_simulated"] = 1 if row.get("is_simulated") else 0
+    cols = list(row.keys())
+    return db.execute(
+        "INSERT INTO vm_recovery_points ({}) VALUES ({})".format(
+            ",".join(cols), ",".join("?" * len(cols))), tuple(row.values()))
+
+
+def get_vm_recovery_point(rp_id: int) -> Optional[dict]:
+    return db.query_one("SELECT * FROM vm_recovery_points WHERE id=?", (int(rp_id),))
+
+
+def list_vm_recovery_points(vm_id: int = None, limit: int = 200) -> list:
+    sql = ("SELECT r.*, p.vm_name, p.node FROM vm_recovery_points r "
+           "LEFT JOIN vm_protected p ON p.id=r.vm_id")
+    args = []
+    if vm_id:
+        sql += " WHERE r.vm_id=?"
+        args.append(int(vm_id))
+    sql += " ORDER BY r.pit_at DESC, r.id DESC LIMIT ?"
+    args.append(int(limit))
+    return db.query(sql, tuple(args))
+
+
+def last_vm_recovery_point(vm_id: int) -> Optional[dict]:
+    rows = db.query("SELECT * FROM vm_recovery_points WHERE vm_id=? "
+                    "ORDER BY pit_at DESC, id DESC LIMIT 1", (int(vm_id),))
+    return rows[0] if rows else None
+
+
+def update_vm_recovery_point(rp_id: int, data: dict) -> None:
+    allow = {"verified", "verify_msg", "expires_at", "artifact_path",
+             "record_id", "set_id", "size_bytes", "checksum"}
+    updates = {k: v for k, v in data.items() if k in allow}
+    if not updates:
+        return
+    sets = ", ".join("%s=?" % k for k in updates)
+    db.execute("UPDATE vm_recovery_points SET %s WHERE id=?" % sets,
+               tuple(updates.values()) + (int(rp_id),))
+
+
+def delete_vm_recovery_point(rp_id: int) -> None:
+    db.execute("DELETE FROM vm_recovery_points WHERE id=?", (int(rp_id),))
+
+
+def create_vm_job(data: dict) -> int:
+    row = {k: data.get(k) for k in _VM_JOB_FIELDS}
+    row["created_at"] = db.now_iso()
+    row["status"] = row.get("status") or "pending"
+    for n in ("vm_id", "rp_id"):
+        if row.get(n) in (0, "", None):
+            row[n] = None
+    for n in ("ttl_hours", "progress"):
+        v = row.get(n)
+        row[n] = int(v) if v not in (None, "") else 0
+    for n in ("isolate_network", "auto_start", "live"):
+        row[n] = 1 if row.get(n) else 0
+    cols = list(row.keys())
+    return db.execute(
+        "INSERT INTO vm_jobs ({}) VALUES ({})".format(
+            ",".join(cols), ",".join("?" * len(cols))), tuple(row.values()))
+
+
+def get_vm_job(job_id: int) -> Optional[dict]:
+    return db.query_one("SELECT * FROM vm_jobs WHERE id=?", (int(job_id),))
+
+
+def list_vm_jobs(vm_id: int = None, mode: str = None, limit: int = 100) -> list:
+    sql = ("SELECT j.*, p.vm_name FROM vm_jobs j "
+           "LEFT JOIN vm_protected p ON p.id=j.vm_id")
+    conds, args = [], []
+    if vm_id:
+        conds.append("j.vm_id=?")
+        args.append(int(vm_id))
+    if mode:
+        conds.append("j.mode=?")
+        args.append(mode)
+    if conds:
+        sql += " WHERE " + " AND ".join(conds)
+    sql += " ORDER BY j.id DESC LIMIT ?"
+    args.append(int(limit))
+    return db.query(sql, tuple(args))
+
+
+def update_vm_job(job_id: int, data: dict) -> None:
+    updates = {k: v for k, v in data.items() if k in _VM_JOB_FIELDS}
+    if not updates:
+        return
+    for n in ("isolate_network", "auto_start", "live"):
+        if n in updates:
+            updates[n] = 1 if updates[n] else 0
+    sets = ", ".join("%s=?" % k for k in updates)
+    db.execute("UPDATE vm_jobs SET %s WHERE id=?" % sets,
+               tuple(updates.values()) + (int(job_id),))

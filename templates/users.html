@@ -104,7 +104,7 @@
 <script>
 (function(){
   const $=BKP.$; let list=[]; let editing=null; let pwdId=null; let permCatalog="";
-  BKP.api("/api/rbac/permissions").then(d=>{
+  BKP.api("GET", "/api/rbac/permissions").then(d=>{
     permCatalog = (d.permissions||[]).map(p=>p.key).join(" · ");
     $("#permHints").textContent = "可选权限点：" + permCatalog;
   });
@@ -137,7 +137,7 @@
     });
     $("#badgeCount").textContent=list.length+" 个";
   }
-  function reload(){ return BKP.api("/api/rbac/users").then(d=>{list=d.users||[];render();}); }
+  function reload(){ return BKP.api("GET", "/api/rbac/users").then(d=>{list=d.users||[];render();}); }
 
   function openEditor(u){
     editing=u||null;
@@ -174,9 +174,9 @@
     if(!data.username){BKP.toast("用户名必填","warning");return;}
     if(!editing && (!data.password||data.password.length<6)){BKP.toast("密码 ≥6 位","warning");return;}
     if(editing && data.password && data.password.length<6){BKP.toast("密码 ≥6 位","warning");return;}
-    const act=editing?`/api/rbac/users/${editing.id}`:"/api/rbac/users";
-    const opt=editing?{method:"PUT"}:{method:"POST"};
-    BKP.api(act,{...opt,body:JSON.stringify(data)})
+    const url=editing?`/api/rbac/users/${editing.id}`:"/api/rbac/users";
+    const method=editing?"PUT":"POST";
+    BKP.api(method, url, data)
       .then(()=>{BKP.toast("保存成功","success");bootstrap.Modal.getInstance($("#editModal")).hide();reload();})
       .catch(e=>BKP.toast(e.message||"保存失败","danger"));
   };
@@ -197,7 +197,7 @@
   $("#btnSavePwd").onclick=()=>{
     const p=$("#np_password").value||"";
     if(p.length<6){BKP.toast("密码 ≥6 位","warning");return;}
-    BKP.api(`/api/rbac/users/${pwdId}/password`,{method:"POST",body:JSON.stringify({password:p})})
+    BKP.api("POST", `/api/rbac/users/${pwdId}/password`, {password:p})
       .then(()=>{BKP.toast("密码已重置","success");bootstrap.Modal.getInstance($("#pwdModal")).hide();})
       .catch(er=>BKP.toast(er.message||"保存失败","danger"));
   };

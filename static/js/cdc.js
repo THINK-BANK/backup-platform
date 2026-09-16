@@ -1,9 +1,19 @@
 /* CDC 实时备份页：捕获流管理 + 事件查看 + 任意时间点回放/回滚 */
+/* 注意：BKP.api 的签名是 (method, url, body)。本页一律用完整签名调用，
+   早期版本曾按 (url, opt) 调用，导致 url 被当作 HTTP 方法传给 fetch，
+   整页请求全部失败（"is not a valid HTTP method"）。 */
 (function () {
   var curStream = null;
 
   function $(id) { return document.getElementById(id); }
-  function api(url, opt) { return BKP.api(url, opt); }
+  // BKP.api 直接 fetch(url)、不拼任何前缀，而本文件的历史调用写作 '/cdc/xxx'，
+  // 真实接口在 '/api/cdc/xxx' —— 整块 CDC 面板因此全部 404。此处统一补齐前缀。
+  function api(method, url, body) {
+    var u = String(url || '');
+    if (u.charAt(0) !== '/') { u = '/' + u; }
+    if (u.indexOf('/api/') !== 0) { u = '/api' + u; }
+    return BKP.api(method, u, body);
+  }
 
   function statusBadge(s, alive) {
     var map = {
@@ -34,8 +44,8 @@
 
   // ---------------- 流列表 ----------------
   function loadStreams() {
-    api('/cdc/streams').then(function (rows) {
-      $('streamBody').innerHTML = rows.map(function (r) {
+    api('GET', '/cdc/streams').then(function (rows) {
+      $('streamBody').innerHTML = (rows || []).map(function (r) {
         return '<tr>' +
           '<td><b>' + BKP.esc(r.name) + '</b><div class="text-muted small">#' + r.id + ' · ' + BKP.esc(r.purpose || 'cdp') + '</div></td>' +
           '<td>' + BKP.esc((BKP.META.display_names[r.db_type] || r.db_type)) + '</td>' +
@@ -54,28 +64,28 @@
           '</td></tr>';
       }).join('') || '<tr><td colspan="9" class="text-center text-muted py-3">暂无捕获流</td></tr>';
 
-      Array.prototype.forEach.call(document.querySelectorAll('.btn-start'), function (b) {
+      Array.prototype.forEach.call(document.querySelectorAll('#streamBody .btn-start'), function (b) {
         b.onclick = function () { act(b.dataset.id, 'start'); };
       });
-      Array.prototype.forEach.call(document.querySelectorAll('.btn-stop'), function (b) {
+      Array.prototype.forEach.call(document.querySelectorAll('#streamBody .btn-stop'), function (b) {
         b.onclick = function () { act(b.dataset.id, 'stop'); };
       });
-      Array.prototype.forEach.call(document.querySelectorAll('.btn-evt'), function (b) {
+      Array.prototype.forEach.call(document.querySelectorAll('#streamBody .btn-evt'), function (b) {
         b.onclick = function () { curStream = b.dataset.id; $('evtTitle').textContent = '— ' + b.dataset.name; loadEvents(); };
       });
-      Array.prototype.forEach.call(document.querySelectorAll('.btn-del'), function (b) {
+      Array.prototype.forEach.call(document.querySelectorAll('#streamBody .btn-del'), function (b) {
         b.onclick = function () {
           if (!window.confirm('删除该捕获流及其全部事件？')) { return; }
-          api('/cdc/streams/' + b.dataset.id, { method: 'DELETE' }).then(function () {
+          api('DELETE', '/cdc/streams/' + b.dataset.id).then(function () {
             BKP.toast('已删除'); loadStreams();
-          });
+          }).catch(function (e) { BKP.toast('删除失败: ' + e.message, 'danger'); });
         };
       });
     }).catch(function (e) { BKP.toast('加载失败: ' + e.message, 'danger'); });
   }
 
   function act(id, op) {
-    api('/cdc/streams/' + id + '/' + op, { method: 'POST' }).then(function (r) {
+    api('POST', '/cdc/streams/' + id + '/' + op).then(function (r) {
       BKP.toast(r.message || '操作完成');
       setTimeout(loadStreams, 800);
     }).catch(function (e) { BKP.toast('操作失败: ' + e.message, 'danger'); });
@@ -86,8 +96,8 @@
     if (!curStream) { BKP.toast('请先选择一个捕获流'); return; }
     var qs = '?limit=100&op=' + encodeURIComponent($('fOp').value) +
       '&table=' + encodeURIComponent($('fTable').value);
-    api('/cdc/streams/' + curStream + '/events' + qs).then(function (r) {
-      $('evtBody').innerHTML = (r.events || []).map(function (e) {
+    api('GET', '/cdc/streams/' + curStream + '/events' + qs).then(function (r) {
+      $('evtBody').innerHTML = ((r && r.events) || []).map(function (e) {
         return '<tr>' +
           '<td class="small text-nowrap">' + BKP.esc(e.event_time || '') + '</td>' +
           '<td>' + opBadge(e.op) + '</td>' +
@@ -126,9 +136,7 @@
   }
 
   function doReplay(body) {
-    api('/cdc/streams/' + curStream + '/replay', {
-      method: 'POST', body: JSON.stringify(body)
-    }).then(function (r) {
+    api('POST', '/cdc/streams/' + curStream + '/replay', body).then(function (r) {
       var box = $('sqlBox');
       box.style.display = 'block';
       box.textContent = (r.sqls || []).join(';\n') + ((r.sqls || []).length ? ';' : '');
@@ -151,9 +159,9 @@
       include_tables: $('nTables').value.trim()
     };
     if (!body.name || !body.host) { BKP.toast('名称与主机必填', 'danger'); return; }
-    api('/cdc/streams', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+    api('POST', '/cdc/streams', body).then(function (r) {
       BKP.toast('创建成功，正在启动…');
-      return api('/cdc/streams/' + r.id + '/start', { method: 'POST' });
+      return api('POST', '/cdc/streams/' + r.id + '/start');
     }).then(function (r) {
       BKP.toast(r.ok ? '已启动' : ('启动失败: ' + r.message), r.ok ? 'dark' : 'danger', 5000);
       bootstrap.Modal.getInstance($('newModal')).hide();
@@ -169,7 +177,7 @@
       db_name: $('nDb').value.trim()
     };
     $('probeMsg').textContent = '检查中…';
-    api('/cdc/probe', { method: 'POST', body: JSON.stringify(body) }).then(function (r) {
+    api('POST', '/cdc/probe', body).then(function (r) {
       $('probeMsg').textContent = r.message || '';
       $('probeBox').innerHTML = (r.checks || []).map(function (c) {
         return '<div class="' + (c.ok ? 'text-success' : 'text-danger') + '">' +
@@ -179,13 +187,16 @@
   }
 
   // ---------------- 初始化 ----------------
-  document.addEventListener('DOMContentLoaded', function () {
-    api('/cdc/capabilities').then(function (r) {
+  // 本模块可能被嵌入「实时备份」合并页的 CDC 标签页，需在面板真正可见时
+  // 才去拉数据；这里以 #capBox 是否存在判断面板是否在页面上。
+  function init() {
+    if (!$('capBox')) return;
+    api('GET', '/cdc/capabilities').then(function (r) {
       $('capBox').innerHTML = '<i class="bi bi-info-circle"></i> 平台侧客户端：mysqlbinlog ' +
         (r.mysqlbinlog ? '<span class="text-success">可用</span>' : '<span class="text-danger">缺失</span>') +
         ' · pg_recvlogical ' + (r.pg_recvlogical ? '<span class="text-success">可用</span>' : '<span class="text-danger">缺失</span>') +
         ' · 支持类型：' + (r.supported || []).join('/');
-    });
+    }).catch(function (e) { $('capBox').innerHTML = '<i class="bi bi-exclamation-triangle"></i> 能力检测失败: ' + BKP.esc(e.message); });
     $('btnNew').onclick = function () { bootstrap.Modal.getOrCreateInstance($('newModal')).show(); };
     $('btnCreate').onclick = create;
     $('btnProbe').onclick = probe;
@@ -194,6 +205,18 @@
     $('btnPreview').onclick = function () { replay(false); };
     $('btnApply').onclick = function () { replay(true); };
     loadStreams();
-    setInterval(loadStreams, 10000);
-  });
+    // 面板隐藏时不轮询，避免合并页空跑请求
+    setInterval(function () {
+      var pane = $('tabCdc');
+      if (pane && pane.offsetParent === null) return;
+      if (document.hidden) return;
+      loadStreams();
+    }, 10000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();

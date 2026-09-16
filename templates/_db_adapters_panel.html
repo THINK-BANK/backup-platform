@@ -1,7 +1,4 @@
-{% extends "base.html" %}
-{% block title %}数据库类型 · 可插拔适配器{% endblock %}
-{% block content %}
-<div class="container-fluid py-3">
+<div class="container-fluid py-3" id="dbAdaptersPanel">
   <div class="d-flex align-items-center mb-3">
     <h4 class="mb-0"><i class="bi bi-stack me-2"></i>数据库类型（可插拔适配器）</h4>
     <span class="badge bg-secondary ms-2" id="badgeCount">0</span>
@@ -15,7 +12,7 @@
     内置引擎（MySQL / Oracle / PG / …）由代码静态注册；本页面让你通过一段 bash
     脚本模板在界面新增任意数据库类型。脚本在数据库服务器（SSH 主机）以 root
     执行，平台注入 <code>PLATFORM_DB_HOST/PORT/USER/PASSWORD/NAME/BACKUP_TYPE/BACKUP_DIR</code>
-    等环境变量；<code>{{KEY}}</code> 占位渲染为 <code>${PLATFORM_KEY}</code>（不写明文）。
+    等环境变量；<code>{% raw %}{{KEY}}{% endraw %}</code> 占位渲染为 <code>${PLATFORM_KEY}</code>（不写明文）。
   </div>
 
   <div class="card">
@@ -166,11 +163,21 @@
   </div>
 </div>
 
-{% endblock %}
-{% block scripts %}
 <script>
-(function(){
-  const $=BKP.$; let list=[]; let editing=null; let testingId=null;
+/* 数据库类型（可插拔适配器）面板脚本。
+   由「数据库备份」页的「数据库类型」标签页承载，标签页首次显示时才加载数据。
+   注意 1：BKP.api 的签名是 (method, url, body) —— 早期按 (url, opt) 调用会把 URL
+   当成 HTTP 方法，导致本面板所有按钮点了没反应。
+   注意 2：本脚本随 include 输出在页面内容区（模板标签不能写进注释，会被 Jinja 解析），而 base.html 的
+   bootstrap.bundle / bkp-core.js / app.js 在内容区之后才加载（实测渲染结果里
+   本脚本在第 268 行、bkp-core.js 在第 926 行）。因此绝不能在解析期直接执行：
+   那时 window.BKP 尚未定义，`const $=BKP.$` 会抛 ReferenceError 并中断整个
+   初始化 —— 现象就是「从模板复制 / 新增适配器」点了没反应、列表空白、计数为 0。
+   统一由文件末尾的 __dbAdaptersBoot() 等依赖就绪后再调用本函数。 */
+function __initDbAdaptersPanel(){
+  const panel = document.getElementById("dbAdaptersPanel");
+  if (!panel) return;                                   // 面板不在当前页则不初始化
+  const $=BKP.$; let list=[]; let editing=null; let testingId=null; let started=false;
 
   function render(){
     const tb=$("#tbody"); tb.innerHTML="";
@@ -209,8 +216,15 @@
   }
 
   function reload(){
-    return BKP.api("/api/db-adapters").then(d=>{list=d.adapters||[]; render();});
+    return BKP.api("GET", "/api/db-adapters").then(d=>{list=d.adapters||[]; render();});
   }
+
+  function ensureLoad(){
+    if(started) return;
+    started=true;
+    reload().catch(e=>BKP.toast("加载数据库类型失败: "+(e.message||e),"danger"));
+  }
+  window.__dbAdaptersEnsureLoad = ensureLoad;
 
   function openEditor(a){
     editing=a||null;
@@ -241,7 +255,7 @@
     f("f_timeout_sec").value=get("timeout_sec")||7200;
     f("f_params").value=JSON.stringify((a&&a.params)||{},null,2);
     $("#previewBox").classList.add("d-none");
-    new bootstrap.Modal($("#editModal")).show();
+    bootstrap.Modal.getOrCreateInstance(document.getElementById("editModal")).show();
   }
 
   function collect(){
@@ -273,10 +287,10 @@
     };
   }
 
-  $("#btnNew").onclick=()=>openEditor(null);
-  $("#btnTemplates").onclick=()=>{
-    BKP.api("/api/db-adapters/templates").then(d=>{
-      const box=$("#tplList"); box.innerHTML="";
+  document.getElementById("btnNew").onclick=()=>openEditor(null);
+  document.getElementById("btnTemplates").onclick=()=>{
+    BKP.api("GET", "/api/db-adapters/templates").then(d=>{
+      const box=document.getElementById("tplList"); box.innerHTML="";
       (d.templates||[]).forEach(t=>{
         const a=document.createElement("a");
         a.className="list-group-item list-group-item-action";
@@ -292,52 +306,54 @@
           script_test_conn:t.script_test_conn||"",
           script_list_dbs:t.script_list_dbs||"",
           params:t.params_hint||{},
-        }); bootstrap.Modal.getInstance($("#tplModal")).hide();};
+        }); bootstrap.Modal.getInstance(document.getElementById("tplModal")).hide();};
         box.appendChild(a);
       });
-      new bootstrap.Modal($("#tplModal")).show();
-    });
+      bootstrap.Modal.getOrCreateInstance(document.getElementById("tplModal")).show();
+    }).catch(e=>BKP.toast("模板加载失败: "+(e.message||e),"danger"));
   };
-  $("#btnPreview").onclick=()=>{
-    const script=$("#f_script_backup_full").value;
-    BKP.api("/api/db-adapters/preview",{method:"POST",body:JSON.stringify({script,params:collect().params})})
+  document.getElementById("btnPreview").onclick=()=>{
+    const script=document.getElementById("f_script_backup_full").value;
+    BKP.api("POST", "/api/db-adapters/preview", {script:script, params:collect().params})
       .then(d=>{
-        const b=$("#previewBox"); b.classList.remove("d-none");
+        const b=document.getElementById("previewBox"); b.classList.remove("d-none");
         b.textContent=(d.warnings&&d.warnings.length?"⚠ "+d.warnings.join("\n⚠ ")+"\n\n":"")+d.rendered;
       }).catch(e=>BKP.toast("预览失败: "+e.message,"danger"));
   };
-  $("#btnSave").onclick=()=>{
+  document.getElementById("btnSave").onclick=()=>{
     const data=collect();
     if(!data.db_type){BKP.toast("db_type 必填","warning");return;}
     if(!data.display_name){BKP.toast("显示名称必填","warning");return;}
-    const act=editing?`/api/db-adapters/${editing.id}`:"/api/db-adapters";
-    const opt=editing?{method:"PUT"}:{method:"POST"};
-    BKP.api(act,{...opt,body:JSON.stringify(data)})
-      .then(()=>{BKP.toast("保存成功","success"); bootstrap.Modal.getInstance($("#editModal")).hide(); reload();})
+    const url=editing?`/api/db-adapters/${editing.id}`:"/api/db-adapters";
+    const method=editing?"PUT":"POST";
+    BKP.api(method, url, data)
+      .then(()=>{BKP.toast("保存成功","success"); bootstrap.Modal.getInstance(document.getElementById("editModal")).hide(); reload();})
       .catch(e=>BKP.toast(e.message||"保存失败","danger"));
   };
-  $("#tbody").addEventListener("click",(e)=>{
+  document.getElementById("tbody").addEventListener("click",(e)=>{
     const btn=e.target.closest("button[data-act]"); if(!btn) return;
     const id=+btn.dataset.id; const a=list.find(x=>x.id===id); if(!a) return;
     const act=btn.dataset.act;
     if(act==="edit") openEditor(a);
-    else if(act==="toggle") BKP.api(`/api/db-adapters/${id}/toggle`,{method:"POST",body:JSON.stringify({enabled:!!+btn.dataset.en})}).then(()=>{BKP.toast("已更新","success");reload();});
+    else if(act==="toggle") BKP.api("POST", `/api/db-adapters/${id}/toggle`, {enabled:!!+btn.dataset.en})
+      .then(()=>{BKP.toast("已更新","success");reload();}).catch(er=>BKP.toast(er.message||"更新失败","danger"));
     else if(act==="del"){
       if(!confirm(`删除适配器 ${a.db_type}?（被任务引用时会拒绝）`)) return;
-      BKP.api(`/api/db-adapters/${id}`,{method:"DELETE"}).then(()=>{BKP.toast("已删除","success");reload();}).catch(er=>BKP.toast(er.message||"删除失败","danger"));
+      BKP.api("DELETE", `/api/db-adapters/${id}`)
+        .then(()=>{BKP.toast("已删除","success");reload();}).catch(er=>BKP.toast(er.message||"删除失败","danger"));
     }
     else if(act==="test"){
-      testingId=id; $("#t_host_id").value=""; $("#tResult").innerHTML="";
-      new bootstrap.Modal($("#testModal")).show();
+      testingId=id; document.getElementById("t_host_id").value=""; document.getElementById("tResult").innerHTML="";
+      bootstrap.Modal.getOrCreateInstance(document.getElementById("testModal")).show();
     }
   });
-  $("#btnDoTest").onclick=()=>{
-    const hostId=parseInt($("#t_host_id").value)||null;
-    $("#tResult").innerHTML='<div class="text-muted">执行中…</div>';
-    BKP.api(`/api/db-adapters/${testingId}/test`,{method:"POST",body:JSON.stringify({host_id:hostId})})
+  document.getElementById("btnDoTest").onclick=()=>{
+    const hostId=parseInt(document.getElementById("t_host_id").value)||null;
+    document.getElementById("tResult").innerHTML='<div class="text-muted">执行中…</div>';
+    BKP.api("POST", `/api/db-adapters/${testingId}/test`, {host_id:hostId})
       .then(d=>{
         const ok=d.ok;
-        $("#tResult").innerHTML=`
+        document.getElementById("tResult").innerHTML=`
           <div class="alert alert-${ok?"success":"danger"} py-2">
             <b>${ok?"✓ 成功":"✗ 失败"}</b> &nbsp; rc=${d.rc} &nbsp; ${d.duration_sec}s &nbsp; ssh=${d.ssh_host||""}
           </div>
@@ -346,10 +362,39 @@
           <pre class="bg-light p-2 small" style="max-height:240px;overflow:auto">${(d.stdout||"").replace(/</g,"&lt;")}</pre>
           <label class="small text-muted">stderr</label>
           <pre class="bg-light p-2 small" style="max-height:180px;overflow:auto">${(d.stderr||"").replace(/</g,"&lt;")}</pre>`;
-      }).catch(e=>$("#tResult").innerHTML=`<div class="alert alert-danger">${e.message}</div>`);
+      }).catch(e=>document.getElementById("tResult").innerHTML=`<div class="alert alert-danger">${e.message}</div>`);
   };
 
-  reload().catch(e=>console.error(e));
-})();
+  // ---- 加载时机：由「数据库备份」页的「数据库类型」标签页首次显示时触发 ----
+  const tabBtn = document.getElementById("tabDbTypesBtn");
+  if (tabBtn) {
+    tabBtn.addEventListener("shown.bs.tab", ensureLoad);
+    let deepLink = false;
+    try {
+      const q = new URLSearchParams(window.location.search);
+      deepLink = q.get("tab") === "dbtypes" || window.location.hash === "#dbtypes";
+    } catch (e) { /* ignore */ }
+    if (deepLink && window.bootstrap) {
+      bootstrap.Tab.getOrCreateInstance(tabBtn).show();   // 旧 /db-adapters 链接重定向到此处
+      ensureLoad();
+    } else if (panel.offsetParent !== null) {
+      ensureLoad();                                       // 面板直接可见（未包在标签页中）
+    }
+  } else {
+    ensureLoad();
+  }
+}
+
+/* 依赖就绪后再初始化：BKP（bkp-core.js）与 bootstrap（bootstrap.bundle）都在
+   内容区之后加载，DOMContentLoaded 一定晚于它们，因此这里用
+   「DOMContentLoaded 或轮询」两种兜底，避免任何一个环境下的加载顺序差异。 */
+function __dbAdaptersBoot() {
+  if (window.BKP && window.bootstrap) { __initDbAdaptersPanel(); return; }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", __dbAdaptersBoot);
+  } else {
+    setTimeout(__dbAdaptersBoot, 20);
+  }
+}
+__dbAdaptersBoot();
 </script>
-{% endblock %}

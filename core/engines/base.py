@@ -173,6 +173,9 @@ class BackupResult:
     verified: bool = False
     verify_msg: str = ""
     detail_log: str = ""
+    # 派生对象引用（虚拟机克隆 / 恢复验证拉起的目标 VM，用于后续回收）
+    target_ref: str = ""
+    target_name: str = ""
 
 
 class BackupEngine:

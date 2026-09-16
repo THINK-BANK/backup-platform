@@ -201,6 +201,40 @@ DUMP_FORMATS = {
             "note": "Redis 备份走 redis-cli --rdb（或复制线上 dump.rdb），产物固定为 RDB 快照。",
         },
     ],
+    # Neo4j 5.x：三种真实通道（离线 dump / 企业版在线 backup / APOC 在线导出）
+    "neo4j": [
+        {
+            "value": "dump", "label": "官方离线导出（.dump，社区版/企业版）", "default": True,
+            "flag": None, "ext": ".dump", "restore": "neo4j-admin load",
+            "note": "neo4j-admin database dump：官方归档格式、体积最小，"
+                    "**要求数据库离线**。社区版只能停整个服务/容器释放数据目录锁"
+                    "（STOP DATABASE 为企业版专属命令）；Docker 部署时平台按官方做法"
+                    "「docker stop → 临时容器 dump → docker start」自动完成。",
+        },
+        {
+            "value": "backup", "label": "企业版在线备份（.backup.tar.gz，不停机/可增量）",
+            "flag": None, "ext": ".backup.tar.gz", "restore": "neo4j-admin restore",
+            "note": "neo4j-admin database backup：无需停库，产物为目录（平台打包拉回）。"
+                    "支持永久增量（--type=DIFF），是企业版推荐通道；社区版执行会失败，"
+                    "平台会自动回退离线 dump。",
+        },
+        {
+            "value": "apoc_cypher", "label": "APOC 在线导出 Cypher（.cypher，可跨版本迁移）",
+            "flag": None, "ext": ".cypher", "restore": "apoc.cypher.runFile",
+            "note": "apoc.export.cypher.all：在线导出为可回灌的 Cypher 脚本，"
+                    "适合跨版本迁移/审计；需安装 APOC 插件并开启 apoc.export.file.enabled。",
+        },
+        {
+            "value": "apoc_json", "label": "APOC 在线导出 JSON（.json）",
+            "flag": None, "ext": ".json", "restore": "apoc.import.json",
+            "note": "apoc.export.json.all：导出为 JSON，便于外部系统对接与审计。",
+        },
+        {
+            "value": "apoc_csv", "label": "APOC 在线导出 CSV（.csv.zip）",
+            "flag": None, "ext": ".csv.zip", "restore": "apoc.import.csv",
+            "note": "apoc.export.csv.all：导出为 CSV 压缩包，便于 Excel/数仓侧处理。",
+        },
+    ],
 }
 
 # PG 系（postgresql / kingbase / opengauss）在 dump_format=auto 时的行为：按压缩开关决定

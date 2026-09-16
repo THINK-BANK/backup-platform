@@ -26,7 +26,28 @@ from core.engines.dameng import DamengEngine
 from core.engines.sqlserver import SQLServerEngine
 from core.engines.redis import RedisEngine
 from core.engines.mongodb import MongoEngine
+from core.engines.neo4j import Neo4jEngine
 from core.engines.file import FileBackupEngine
+
+
+def _register_vm_engine():
+    """惰性注册虚拟机备份引擎。
+
+    为什么不用顶层 import：core.vm.engine 依赖 core.engines.base，
+    而本模块（core.engines.__init__）在 import core.vm 时又会回来
+    触发本模块加载 → 循环导入。这里改为运行时按需绑定，首次用到才加载。
+    """
+    if "vm" in ENGINE_REGISTRY:
+        return ENGINE_REGISTRY.get("vm")
+    try:
+        from core.vm.engine import VMBackupEngine
+    except Exception:
+        return None
+    ENGINE_REGISTRY["vm"] = VMBackupEngine
+    ENGINE_DISPLAY["vm"] = VMBackupEngine.display_name
+    VMBackupEngine.adapter_tier = "peripheral_api"
+    return VMBackupEngine
+
 
 ENGINE_REGISTRY = {
     "mysql": MySQLEngine,
@@ -38,17 +59,19 @@ ENGINE_REGISTRY = {
     "sqlserver": SQLServerEngine,
     "redis": RedisEngine,
     "mongodb": MongoEngine,
+    "neo4j": Neo4jEngine,
     "file": FileBackupEngine,
 }
 
 ENGINE_DISPLAY = {k: cls.display_name for k, cls in ENGINE_REGISTRY.items()}
+ENGINE_DISPLAY["vm"] = "虚拟机"
 
 # ------------------------- 适配层分级（Adapter Tier） -------------------------
 # core_self      : 核心库（信创）以自研适配器为主，强同步/准同步、物理备份能力完备
 # peripheral_api : 外围引擎以 API 集成封装为主（逻辑导出 + 远程调用）
 _CORE_SELF = ("oracle", "kingbase", "dameng")
 _PERIPHERAL_API = ("mysql", "mariadb", "postgresql", "sqlserver",
-                   "redis", "mongodb", "file")
+                   "redis", "mongodb", "neo4j", "file", "vm")
 for _name in _CORE_SELF:
     if _name in ENGINE_REGISTRY:
         ENGINE_REGISTRY[_name].adapter_tier = "core_self"
@@ -86,8 +109,26 @@ def supported_types() -> list:
     return out
 
 
+# 内置引擎能力覆盖：engine_meta_map 的默认值偏乐观（全部 True），
+# 部分引擎并不支持物理备份/全实例/同步，这里按各引擎**真实能力**逐项声明，
+# 供前端下拉与能力提示诚实展示（新增类型时请同步登记）。
+_ENGINE_META_OVERRIDE = {
+    "neo4j": {
+        "icon": "bi-diagram-3",
+        "description": "图数据库：离线 dump / 企业版在线 backup / APOC 在线导出 三通道",
+        "backup_modes": ["logical"],
+        # 增量仅企业版「在线 backup」通道原生支持（--type=DIFF），
+        # 其余通道由引擎诚实回退为全量并给出说明。
+        "supports_incremental": True,
+        "supports_full_instance": False,
+        "supports_sync": False,
+    },
+}
+
+
 def engine_meta_map() -> dict:
     """返回 db_type → 元信息，给前端下拉/分类展示用。"""
+    import config
     out = {}
     for t, cls in ENGINE_REGISTRY.items():
         out[t] = {
@@ -95,7 +136,7 @@ def engine_meta_map() -> dict:
             "display_name": getattr(cls, "display_name", t),
             "category": "builtin",
             "icon": "bi-hdd-stack",
-            "default_port": None,
+            "default_port": config.DEFAULT_PORTS.get(t),
             "description": "",
             "backup_modes": ["logical", "physical"],
             "supports_incremental": True,
@@ -105,6 +146,7 @@ def engine_meta_map() -> dict:
             "builtin": True,
             "source": "builtin",
         }
+        out[t].update(_ENGINE_META_OVERRIDE.get(t) or {})
     try:
         from core import db_adapters
         for spec in db_adapters.list_adapters(include_disabled=False):
@@ -130,6 +172,13 @@ class AdapterContract(Protocol):
 
 def get_engine(db_type: str, task: dict, storage_root: str, logger=None):
     cls = ENGINE_REGISTRY.get(db_type)
+    if not cls:
+        # 虚拟机引擎：core.vm 与本模块互相依赖，只能运行时惰性注册。
+        # 必须在这里兜住——调度器定时触发、手动备份、还原/克隆/恢复验证
+        # 全部经由本函数取引擎，漏掉会导致 db_type='vm' 的任务一调度就抛
+        # 「不支持的数据库类型」。
+        if db_type == "vm":
+            cls = _register_vm_engine()
     if not cls:
         # 适配器未注册 → 尝试惰性注册（动态类型首次调度时）
         try:

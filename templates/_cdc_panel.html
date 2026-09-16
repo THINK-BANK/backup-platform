@@ -1,11 +1,9 @@
-{% extends "base.html" %}
-{% block title %}CDC 实时备份（持续数据保护） · AIDBM{% endblock %}
-{% block content %}
+<!-- CDC 变更捕获面板（由 templates/realtime.html 的「CDC 变更捕获与回放」标签页引入） -->
 <div class="d-flex align-items-center justify-content-between mb-3">
   <div>
-    <h4 class="mb-1"><i class="bi bi-broadcast"></i> CDC 实时备份（持续数据保护 CDP）</h4>
+    <h5 class="mb-1"><i class="bi bi-list-columns-reverse"></i> CDC 行级变更捕获</h5>
     <div class="text-muted small">
-      行级变更捕获：把数据库事务日志解析为结构化变更事件（INSERT/UPDATE/DELETE + 前后镜像 + 位点），
+      把数据库事务日志解析为结构化变更事件（INSERT/UPDATE/DELETE + 前后镜像 + 位点），
       支撑任意时间点回滚、重放到目标库、增量迁移与实时同步。源库零安装，密码不落命令行。
     </div>
   </div>
@@ -142,7 +140,3 @@
     </div>
   </div>
 </div>
-{% endblock %}
-{% block scripts %}
-<script src="/static/js/cdc.js?v=2026091501"></script>
-{% endblock %}

@@ -16,6 +16,8 @@ _LIST_DB_SKIP = {
     "postgresql": {"template0", "template1"},
     "kingbase": {"template0", "template1"},
     "sqlserver": {"master", "tempdb", "model", "msdb"},
+    # Neo4j：system 为系统库（不可 dump），引擎经 cypher-shell SHOW DATABASES 拉取
+    "neo4j": {"system"},
 }
 
 
@@ -62,6 +64,10 @@ def _fetch_db_list(db_type: str, task: dict):
         original_err = f"{e}"
     try:
         from core import jdbc
+        # 无 JDBC/原生直连通道的类型（如 Neo4j，只能靠 cypher-shell）不该被判成故障：
+        # 引擎侧拿不到列表时返回空集，由前端提示「请手工填写库名」。
+        if db_type not in jdbc.JDBC_DB_TYPES:
+            return [], False, None
         dbs = jdbc.list_databases(
             db_type,
             task.get("host") or "127.0.0.1",

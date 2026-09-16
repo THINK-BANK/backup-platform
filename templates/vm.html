@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="toolbar">
+  <div>
+    <div class="page-title">虚拟机备份</div>
+    <div class="page-sub">整机级CEP：恢复点（PITR）· 永久增量 · 合成全量 · 原位还原 · 克隆为新 VM · 自动恢复验证</div>
+  </div>
+  <button class="btn btn-primary" id="newHvBtn"><i class="bi bi-hdd-rack"></i> 纳管虚拟化平台</button>
+  <button class="btn btn-outline-secondary btn-sm" onclick="vmLoadAll()" title="刷新"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+</div>
+
+<ul class="nav nav-tabs mb-3" id="vmTabs">
+  <li class="nav-item"><a class="nav-link active" href="#tab-hv" data-bs-toggle="tab">虚拟化平台</a></li>
+  <li class="nav-item"><a class="nav-link" href="#tab-protected" data-bs-toggle="tab">受保护虚拟机</a></li>
+  <li class="nav-item"><a class="nav-link" href="#tab-rp" data-bs-toggle="tab">恢复点</a></li>
+  <li class="nav-item"><a class="nav-link" href="#tab-jobs" data-bs-toggle="tab">作业 / 验证</a></li>
+</ul>
+
+<div class="tab-content">
+  <!-- ① 虚拟化平台 -->
+  <div class="tab-pane fade show active" id="tab-hv">
+    <div class="page-card">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead><tr>
+            <th>ID</th><th>名称</th><th>类型</th><th>连接地址</th><th>版本</th>
+            <th>状态</th><th>最近检查</th><th class="text-end">操作</th>
+          </tr></thead>
+          <tbody id="hvTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ② 受保护虚拟机 -->
+  <div class="tab-pane fade" id="tab-protected">
+    <div class="page-card">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead><tr>
+            <th>ID</th><th>虚拟机</th><th>平台</th><th>电源</th><th>磁盘/容量</th>
+            <th>频率</th><th>一致性</th><th>恢复点</th><th>最近恢复点</th><th>状态</th>
+            <th class="text-end">操作</th>
+          </tr></thead>
+          <tbody id="vmTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ③ 恢复点（时间轴） -->
+  <div class="tab-pane fade" id="tab-rp">
+    <div class="toolbar mb-2">
+      <select class="form-select form-select-sm" id="rpVmFilter" style="max-width:260px">
+        <option value="">全部虚拟机</option>
+      </select>
+      <button class="btn btn-sm btn-outline-primary" onclick="vmLoadRps()">
+        <i class="bi bi-arrow-clockwise"></i> 刷新</button>
+    </div>
+    <div class="page-card">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead><tr>
+            <th>ID</th><th>虚拟机</th><th>恢复点时刻(PIT)</th><th>类型</th><th>一致性</th>
+            <th>大小</th><th>校验值</th><th>验证</th><th class="text-end">操作</th>
+          </tr></thead>
+          <tbody id="rpTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ④ 作业 / 自动恢复验证 -->
+  <div class="tab-pane fade" id="tab-jobs">
+    <div class="toolbar mb-2">
+      <button class="btn btn-sm btn-outline-secondary" onclick="vmLoadJobs()">
+        <i class="bi bi-arrow-clockwise"></i> 刷新</button>
+      <button class="btn btn-sm btn-outline-danger" onclick="vmReap()">
+        <i class="bi bi-trash3"></i> 回收到期克隆</button>
+    </div>
+    <div class="page-card">
+      <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead><tr>
+            <th>ID</th><th>虚拟机</th><th>模式</th><th>目标</th><th>状态</th>
+            <th>隔离网络</th><th>TTL</th><th>说明</th><th class="text-end">操作</th>
+          </tr></thead>
+          <tbody id="jobTable"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 纳管虚拟化平台 -->
+<div class="modal fade" id="hvModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">纳管虚拟化平台</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">名称 *</label>
+            <input class="form-control" id="hv_name" placeholder="如 PVE-生产集群">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">平台类型 *</label>
+            <select class="form-select" id="hv_provider"></select>
+          </div>
+          <div class="col-md-12">
+            <label class="form-label">连接地址 *</label>
+            <input class="form-control" id="hv_endpoint"
+                   placeholder="PVE: https://10.0.0.5:8006 | KVM: root@10.0.0.6 | ESXi: 10.0.0.7 | Hyper-V: 10.0.0.8">
+            <div class="form-text" id="hv_provider_hint"></div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">用户名 / Token ID</label>
+            <input class="form-control" id="hv_username" placeholder="root 或 root@pam!token">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">密码 / Token Secret</label>
+            <input class="form-control" type="password" id="hv_password">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">校验 SSL 证书</label>
+            <select class="form-select" id="hv_ssl">
+              <option value="0">不校验（自签名证书）</option>
+              <option value="1">校验</option>
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">隔离网络 / 端口组</label>
+            <input class="form-control" id="hv_iso" placeholder="vmbr_iso / vSwitch-iso">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">备份暂存目录（数据源侧）</label>
+            <input class="form-control" id="hv_work" placeholder="/var/tmp/vmbk 或 C:\vmbk">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">PVE 备份存储 / libvirt URI</label>
+            <input class="form-control" id="hv_storage"
+                   placeholder="PVE 填 PBS/本地存储名；KVM 可填 qemu+ssh://host/system">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary" id="hvTestBtn">测试连接</button>
+        <button class="btn btn-primary" id="hvSaveBtn">保存并纳管</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 资产发现 + 建立保护 -->
+<div class="modal fade" id="discoverModal" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">资产发现与保护</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-info py-2" id="discoverCaps"></div>
+        <table class="table table-sm align-middle">
+          <thead><tr>
+            <th style="width:36px"></th><th>名称</th><th>标识</th><th>状态</th>
+            <th>CPU/内存</th><th>磁盘</th><th>容量</th><th>不支持的盘</th>
+          </tr></thead>
+          <tbody id="discoverTable"></tbody>
+        </table>
+        <div class="row g-3 mt-2">
+          <div class="col-md-3">
+            <label class="form-label">备份间隔（分钟）</label>
+            <input class="form-control" type="number" id="pr_interval" value="1440" min="5">
+            <div class="form-text">准 CDP 可设 5~60 分钟</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">一致性</label>
+            <select class="form-select" id="pr_consistency">
+              <option value="crash">崩溃一致</option>
+              <option value="fs">文件系统一致（需 guest tools）</option>
+              <option value="app">应用一致（VSS/静默脚本）</option>
+            </select>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">RPO 目标（分钟）</label>
+            <input class="form-control" type="number" id="pr_rpo" value="1440" min="1">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">保留天数 / 个数</label>
+            <div class="input-group">
+              <input class="form-control" type="number" id="pr_days" value="30">
+              <input class="form-control" type="number" id="pr_count" value="60">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="protectBtn">建立保护</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 克隆为新 VM -->
+<div class="modal fade" id="cloneModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">克隆为新虚拟机</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="cl_rp_id">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label">新 VM 名称</label>
+            <input class="form-control" id="cl_name" placeholder="留空自动生成">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">目标宿主机 / 节点</label>
+            <input class="form-control" id="cl_node" placeholder="留空与源一致">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">隔离网络</label>
+            <div class="form-check mt-2">
+              <input class="form-check-input" type="checkbox" id="cl_iso" checked>
+              <label class="form-check-label" for="cl_iso">接入隔离网络（推荐）</label>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">隔离网络名</label>
+            <input class="form-control" id="cl_net" placeholder="留空用平台默认值">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">克隆后自动开机</label>
+            <select class="form-select" id="cl_start">
+              <option value="1">是</option><option value="0">否</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">新 MAC 地址</label>
+            <select class="form-select" id="cl_mac">
+              <option value="1">生成（避免冲突）</option><option value="0">保留</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">存活时长 TTL（小时）</label>
+            <input class="form-control" type="number" id="cl_ttl" value="24" min="0">
+            <div class="form-text">0 = 不自动回收（平台不隐含实施未请求的操作）</div>
+          </div>
+          <div class="col-md-12">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="cl_live">
+              <label class="form-check-label" for="cl_live">即时恢复（先开机、后台回填数据，需 PBS 等支持）</label>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="cloneSubmitBtn">开始克隆</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/vm.js') }}?v={{ ts }}"></script>
+{% endblock %}

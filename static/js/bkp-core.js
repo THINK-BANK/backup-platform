@@ -7,8 +7,15 @@ window.BKP = (function () {
   const BKP = {};
 
   // ---- 安全的 DOM 获取 ----
+  // 兼容两种写法：BKP.$("myId") 与 BKP.$("#myId")。
+  // 历史实现只认纯 id，传 "#xxx" 时 getElementById 必然取不到元素，
+  // 回退的 Proxy 又没有 appendChild，页面就会报 "tb.appendChild is not a function"。
+  function _byId(id) {
+    const key = String(id == null ? "" : id).trim().replace(/^#/, "");
+    return document.getElementById(key);
+  }
   BKP.$ = function (id) {
-    const el = document.getElementById(id);
+    const el = _byId(id);
     if (el) return el;
     return new Proxy({}, {
       get(t, p) {
@@ -21,6 +28,11 @@ window.BKP = (function () {
         if (p === "files") return [];
         if (p === "children" || p === "parentNode") return [];
         if (p === "addEventListener" || p === "removeEventListener" || p === "setAttribute" || p === "dispatchEvent" || p === "click" || p === "focus" || p === "reset" || p === "show" || p === "hide" || p === "querySelectorAll" || p === "querySelector") return function(){};
+        // 文档结构操作方法：元素缺失时静默无操作，避免 "xxx is not a function" 打断整个页面逻辑
+        if (p === "appendChild" || p === "append" || p === "insertBefore" || p === "removeChild" || p === "remove" || p === "replaceChildren") return function(){};
+        if (p === "closest") return function(){ return null; };
+        if (p === "contains") return function(){ return false; };
+        if (p === "getAttribute") return function(){ return null; };
         if (typeof p === "string" && /^(on|set|get)/.test(p)) return function(){};
         return t[p];
       },
@@ -30,7 +42,7 @@ window.BKP = (function () {
 
   // ---- 安全属性获取（ES5 兼容）----
   BKP.$safe = function (id) {
-    var el = document.getElementById(id);
+    var el = _byId(id);
     if (el) return el;
     return {
       value: "", textContent: "", innerHTML: "", checked: false, dispatchEvent: function(){},
