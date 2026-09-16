@@ -792,7 +792,11 @@ class SyncEngine:
                     break
 
         duration = (datetime.now() - start).total_seconds()
-        success = grand_errors == 0 or (cfg.error_threshold and grand_errors <= cfg.error_threshold)
+        # 有失败表一律判失败：建表/建约束这类结构级错误不产生行级 error 计数，
+        # 只看 grand_errors 会把"整表根本没建起来（读 0 写 0）"当成成功，
+        # 直到后续校验阶段才抛出更难定位的错误（实测 PG→MySQL 建表失败即如此）。
+        success = (not failed_tables) and bool(
+            grand_errors == 0 or (cfg.error_threshold and grand_errors <= cfg.error_threshold))
         message = (
             f"全库迁移：{len(tables)} 张表，读取 {grand_total_read} 行，"
             f"写入 {grand_total_write} 行，错误 {grand_errors} 行"

@@ -332,7 +332,9 @@ class DbMigrationEngine:
                     cur.execute("SELECT COUNT(*) FROM information_schema.tables"
                                 " WHERE table_schema='public' AND table_type='BASE TABLE'")
                     tables = int(cur.fetchone()[0])
-                    cur.execute("SELECT IFNULL(SUM(n_live_tup),0) FROM pg_stat_user_tables")
+                    # COALESCE 为 SQL 标准写法（PG/金仓均支持）；
+                    # 旧实现误用 MySQL 方言 IFNULL，导致 PG 源预检查直接报错。
+                    cur.execute("SELECT COALESCE(SUM(n_live_tup),0) FROM pg_stat_user_tables")
                     total = int(cur.fetchone()[0])
             finally:
                 conn.close()

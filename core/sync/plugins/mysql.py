@@ -62,13 +62,14 @@ class MySQLSourceReader(SourceReader):
                 # 仅 DATA_TYPE 会丢 unsigned 导致升位映射失效
                 cur.execute(
                     "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, "
-                    "CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE "
+                    "CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, EXTRA "
                     "FROM INFORMATION_SCHEMA.COLUMNS "
                     "WHERE TABLE_SCHEMA=%s AND TABLE_NAME=%s ORDER BY ORDINAL_POSITION",
                     (db, table),
                 )
                 cols = []
                 for row in cur.fetchall():
+                    extra = (row[7] or "").lower()
                     cols.append(ColumnMeta(
                         name=row[0],
                         type=row[1].upper(),
@@ -77,6 +78,10 @@ class MySQLSourceReader(SourceReader):
                         max_length=row[4],
                         numeric_precision=row[5],
                         numeric_scale=row[6],
+                        # 自增列在 INFORMATION_SCHEMA 里没有默认值（COLUMN_DEFAULT 为 NULL），
+                        # 只有 EXTRA 带 auto_increment。不读 EXTRA 会导致目标表丢自增，
+                        # 后续插入数据主键冲突。
+                        auto_increment=("auto_increment" in extra),
                     ))
                 for c in cols:
                     c.is_primary = c.name in pk_set
@@ -186,18 +191,130 @@ class MySQLSinkWriter(SinkWriter):
         table_ref = f"`{db}`.`{table}`" if db else f"`{table}`"
         lines = []
         pks = []
+        auto_cols = []
         for c in columns:
             ctype = self._map_to_mysql_type(c)
             null_str = "NULL" if c.nullable else "NOT NULL"
-            default_str = ""
-            if c.default is not None:
-                default_str = f" DEFAULT {c.default}"
-            lines.append(f"    `{c.name}` {ctype} {null_str}{default_str}")
+            default_str, auto_inc = self._mysql_default(c.default, ctype)
+            # 源端显式自增标记（MySQL/MariaDB 的 EXTRA、PG/金仓序列默认值）优先
+            if getattr(c, "auto_increment", False) and self._is_int_type(ctype):
+                auto_inc = True
+            if auto_inc:
+                lines.append(f"    `{c.name}` {ctype} {null_str} AUTO_INCREMENT")
+                auto_cols.append(c.name)
+            else:
+                lines.append(f"    `{c.name}` {ctype} {null_str}{default_str}")
             if getattr(c, "is_primary", False):
                 pks.append(c.name)
         if pks:
             lines.append(f"    PRIMARY KEY ({', '.join(f'`{k}`' for k in pks)})")
+        # MySQL 要求 AUTO_INCREMENT 列必须是键：源端自增列若非主键，必须补唯一键，
+        # 否则整张表建不起来（Incorrect table definition; there can be only one
+        # auto column and it must be defined as a key）。
+        for name in auto_cols:
+            if name not in pks:
+                lines.append(f"    UNIQUE KEY `uk_{name}` (`{name}`)")
         return f"CREATE TABLE IF NOT EXISTS {table_ref} (\n" + ",\n".join(lines) + "\n)"
+
+    # 源端原生函数默认值 -> MySQL 等价写法（跨库型迁移时源端可能是 PG/金仓/达梦）
+    _FUNC_DEFAULTS = {
+        "CURRENT_TIMESTAMP": "CURRENT_TIMESTAMP",
+        "CURRENT_TIMESTAMP()": "CURRENT_TIMESTAMP",
+        "NOW()": "CURRENT_TIMESTAMP",
+        "LOCALTIMESTAMP": "CURRENT_TIMESTAMP",
+        "CURRENT_DATE": "CURRENT_DATE",
+        "CURRENT_DATE()": "CURRENT_DATE",
+        "CURRENT_TIME": "CURRENT_TIME",
+        "CURRENT_TIME()": "CURRENT_TIME",
+    }
+    _INT_BASES = ("TINYINT", "SMALLINT", "MEDIUMINT", "INT", "INTEGER", "BIGINT")
+
+    # 异源多词/异名类型 -> MySQL 基类型（源端可能是 PG/达梦/金仓/Oracle）
+    _TYPE_ALIAS = {
+        "CHARACTER VARYING": "VARCHAR",
+        "CHAR VARYING": "VARCHAR",
+        "NATIONAL CHARACTER VARYING": "VARCHAR",
+        "NATIONAL CHARACTER": "CHAR",
+        "CHARACTER": "CHAR",
+        "NCHAR": "CHAR",
+        "NVARCHAR": "VARCHAR",
+        "DOUBLE PRECISION": "DOUBLE",
+        "TIMESTAMP WITHOUT TIME ZONE": "DATETIME",
+        "TIMESTAMP WITH TIME ZONE": "DATETIME",
+        "TIMESTAMPTZ": "DATETIME",
+        "TIME WITHOUT TIME ZONE": "TIME",
+        "TIME WITH TIME ZONE": "TIME",
+        "DEC": "DECIMAL",
+        "NUMERIC": "DECIMAL",
+        "INTEGER": "INT",
+        "INT2": "SMALLINT",
+        "INT4": "INT",
+        "INT8": "BIGINT",
+        "FLOAT4": "FLOAT",
+        "FLOAT8": "DOUBLE",
+        "SERIAL": "INT",
+        "BIGSERIAL": "BIGINT",
+        "SMALLSERIAL": "SMALLINT",
+        "BOOLEAN": "TINYINT",
+        "BYTEA": "BLOB",
+        "UUID": "CHAR",
+        "INTERVAL": "VARCHAR",
+        "MONEY": "DECIMAL",
+        "CLOB": "LONGTEXT",
+    }
+
+    @classmethod
+    def _is_int_type(cls, ctype: str) -> bool:
+        return (ctype or "").upper().split("(")[0].strip() in cls._INT_BASES
+
+    @classmethod
+    def _mysql_default(cls, value: Any, ctype: str):
+        """源端列默认值 -> (MySQL DEFAULT 子句, 是否 AUTO_INCREMENT)。
+
+        跨库型迁移时源端默认值不一定是 MySQL 字面量：
+        - PG/金仓 serial(identity) 列的默认值是 nextval('seq'::regclass)，直接拼进
+          目标 DDL 会报 1064 语法错误 → 整表建表失败（且读 0 写 0，看状态像"成功"）；
+          这类列应转为 AUTO_INCREMENT，由 MySQL 自增接管，不依赖源端序列名。
+        - PG 的函数默认值（now()/CURRENT_TIMESTAMP）需要转成 MySQL 写法。
+        - PG 的字面量默认值带类型转换（'x'::character varying、0::numeric）需剥掉 ::type。
+        - 其余无法换算的原生表达式一律**不生成 DEFAULT**：宁可不带默认值，
+          也不能让整张表建不起来（缺默认值只影响新插入行，丢表影响全量数据）。
+        """
+        if value is None:
+            return "", False
+        s = str(value).strip()
+        if not s:
+            return "", False
+        up = s.upper()
+
+        # ① 序列自增 / identity -> AUTO_INCREMENT
+        if re.match(r"^(NEXT VALUE FOR\s+|NEXTVAL\s*\()", up) or "::REGCLASS" in up:
+            return "", cls._is_int_type(ctype)
+        # ② 原生函数默认值
+        if up in cls._FUNC_DEFAULTS:
+            expr = cls._FUNC_DEFAULTS[up]
+            # 时间函数默认值必须与列精度一致：DATETIME(6) 配 CURRENT_TIMESTAMP 会报
+            # 1067 Invalid default value（MySQL 8.0 实测命中）→ 需写成 CURRENT_TIMESTAMP(6)。
+            m_fsp = re.search(r"\((\d+)\)", ctype or "")
+            if m_fsp and expr in ("CURRENT_TIMESTAMP", "CURRENT_TIME"):
+                expr = "%s(%s)" % (expr, m_fsp.group(1))
+            return " DEFAULT " + expr, False
+        # ③ 带类型转换的字面量
+        m = re.match(r"^'(.*)'::[\w\s\[\].]+$", s, re.S)
+        if m:
+            return " DEFAULT '%s'" % m.group(1).replace("'", "''"), False
+        m = re.match(r"^([-\d.]+)::[\w\s\[\].]+$", s)
+        if m:
+            return " DEFAULT " + m.group(1), False
+        # ④ 其它原生表达式（含 :: 或函数调用）——不生成 DEFAULT，避免建表失败
+        if "::" in s or re.search(r"[A-Za-z_]\w*\s*\(", s):
+            return "", False
+        # ⑤ 普通字面量
+        if up == "NULL":
+            return " DEFAULT NULL", False
+        if re.match(r"^[+-]?\d+(\.\d+)?$", s):
+            return " DEFAULT " + s, False
+        return " DEFAULT '%s'" % s.replace("'", "''"), False
 
     def _map_to_mysql_type(self, col: ColumnMeta) -> str:
         t = (col.type or "VARCHAR").upper().strip()
@@ -210,6 +327,13 @@ class MySQLSinkWriter(SinkWriter):
         # 否则 head.split()[0] 会取到 'unsigned' 而落到兜底 VARCHAR(255)（实测命中）
         head = re.sub(r"\b(unsigned|signed|zerofill)\b", " ", head).strip()
         base = head.split()[0] if head else t
+        # 异源类型名归一化，必须先于下面的标准类型分支：PG 的 'CHARACTER VARYING'
+        # 取首词是 'CHARACTER'，匹配不到任何分支而落到兜底 TEXT —— 列长度
+        # (varchar(50)/(100)) 与数值精度全部丢失，且 TEXT 列不允许默认值、不能建前缀索引。
+        norm = self._TYPE_ALIAS.get(" ".join(head.split()))
+        t_out = t
+        if norm:
+            head = base = t_out = norm
         # 偏门类型优先：ENUM/SET/JSON/YEAR/SPATIAL/UUID/VECTOR 等需要保留精确写法
         if base in ("ENUM", "SET"):
             # ENUM/SET 关键字大写，括号内枚举值原大小写（MySQL 关键字大小写
@@ -235,7 +359,7 @@ class MySQLSinkWriter(SinkWriter):
         if base in ("DECIMAL", "NUMERIC"):
             return f"{base}({col.numeric_precision or 10},{col.numeric_scale or 0})"
         if base in ("TINYINT", "SMALLINT", "MEDIUMINT", "INT", "INTEGER", "BIGINT"):
-            return t
+            return t_out
         if base in ("TEXT", "LONGTEXT", "MEDIUMTEXT", "TINYTEXT", "BLOB", "LONGBLOB",
                     "MEDIUMBLOB", "TINYBLOB", "DATE", "DATETIME", "TIMESTAMP", "TIME",
                     "FLOAT", "DOUBLE", "REAL", "BIT", "JSON", "BINARY", "VARBINARY"):
@@ -244,7 +368,7 @@ class MySQLSinkWriter(SinkWriter):
             # 无 TIMESTAMP 的 2038 上限（与 type_matrix 的映射建议保持一致）
             if base == "TIMESTAMP" and "WITH" in t:
                 return "DATETIME(6)"
-            return t
+            return t_out
         # 跨源兜底：源端列类型来自别的库（JSONB/XMLTYPE/HIERARCHYID/INET/ROWID/
         # TSVECTOR...）时用统一类型矩阵翻译，避免无脑落 VARCHAR(255) 丢语义
         sug = matrix_suggest(getattr(self, "config", None), "mysql", col.type)

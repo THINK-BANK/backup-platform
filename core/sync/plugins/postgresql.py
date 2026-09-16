@@ -325,6 +325,12 @@ class PostgreSQLSinkWriter(SinkWriter):
             return f" DEFAULT {upper.replace('CURRENT_TIMESTAMP()', 'CURRENT_TIMESTAMP')}"
         if s == "":
             return ""
+        # 源端本身是 PG/金仓时，默认值可能是 PG 原生表达式——最典型是自增列的
+        # nextval('seq'::regclass)。这类值必须原样下传：一旦被当成字符串字面量
+        # 加引号，PG 会把 'nextval(...)' 当 text，
+        # 建表即失败（invalid input syntax / 整表失败）。
+        if re.match(r"^nextval\s*\(", s, re.I) or "::regclass" in s.lower():
+            return f" DEFAULT {s}"
         if re.fullmatch(r"[+-]?\d+(\.\d+)?", s):
             return f" DEFAULT {s}"
         if ctype in ("BOOLEAN", "BOOL") and upper in ("TRUE", "FALSE", "1", "0", "'1'", "'0'"):
@@ -339,6 +345,16 @@ class PostgreSQLSinkWriter(SinkWriter):
             ctype = self._map_to_pg_type(c)
             null_str = "NULL" if c.nullable else "NOT NULL"
             default_str = self._pg_default(c.default, ctype)
+            # 自增列：源端为序列默认值（PG/金仓的 SERIAL/IDENTITY）时，目标端改用
+            # SERIAL/BIGSERIAL 让 PG 自动建序列并绑定。直接下传 nextval('源序列名')
+            # 会因目标库不存在同名序列而建表失败，导致该表被整表跳过。
+            if c.default and re.match(r"^nextval\s*\(", str(c.default).strip(), re.I):
+                _base = ctype.split("(")[0].strip().upper()
+                if _base in ("BIGINT", "INT8"):
+                    ctype = "BIGSERIAL"
+                elif _base in ("INTEGER", "INT", "INT4", "SMALLINT", "INT2"):
+                    ctype = "SERIAL"
+                default_str = ""
             # 列名按 field_ide 归一（与 write_batch 一致；否则建表用源库
             # 大写列名而写入按 lower，列名错位导致 UndefinedColumn）
             cname = self.plugin.normalize_identifier(

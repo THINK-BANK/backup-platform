@@ -74,6 +74,11 @@ class ColumnMeta:
     max_length: Optional[int] = None
     numeric_precision: Optional[int] = None
     numeric_scale: Optional[int] = None
+    # 以下两项原先靠"动态属性"承载（各源插件赋值、目标插件 getattr 读取），
+    # 正规化为字段后契约清晰：目标端建表必须能还原主键与自增，
+    # 否则迁移产物无主键/无自增，后续同步写入会出现重复行与主键冲突。
+    is_primary: bool = False
+    auto_increment: bool = False
 
 
 def matrix_suggest(config, tgt_db: str, type_str: str) -> Optional[str]:

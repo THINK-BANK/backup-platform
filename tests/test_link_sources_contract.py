@@ -229,8 +229,13 @@ class TestDaemonStoppedHint(_SourcesCase):
     """验收 G1-6/7：模板提示条 + 创建成功后的守护态探测分支。"""
 
     def test_rt_timeline_page_has_stopped_hint(self):
-        """/rt-timeline 含常驻提示条与「启动守护」按钮，且默认隐藏。"""
-        resp = self.client.get("/rt-timeline")
+        """/realtime（原 /rt-timeline 旧入口）含常驻提示条与「启动守护」按钮，且默认隐藏。"""
+        # /rt-timeline 已与 CDC 合并到 /realtime：旧入口 302 跳转到承载页，
+        # 断言目标必须是承载页，否则把"页面合并"误判成缺陷。
+        redirect_resp = self.client.get("/rt-timeline")
+        self.assertEqual(redirect_resp.status_code, 302)
+        self.assertIn("/realtime", redirect_resp.headers.get("Location", ""))
+        resp = self.client.get("/realtime")
         self.assertEqual(resp.status_code, 200)
         body = resp.get_data(as_text=True)
         self.assertIn('id="rtStoppedHint"', body)
