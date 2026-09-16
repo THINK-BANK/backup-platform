@@ -14,7 +14,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 **备份 · 恢复 · PITR · 数据迁移 · 数据同步 · 数据对比 · 预校验 · 克隆 · 演练 · 巡检 · AI 告警**
 
-[![Version](https://img.shields.io/badge/Version-v1.4.8-0D9488)](#更新日志)
+[![Version](https://img.shields.io/badge/Version-v1.4.9-0D9488)](#更新日志)
 [![License](https://img.shields.io/badge/License-MIT-green)](#许可证)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED)](#docker-部署含离线运行)
@@ -346,7 +346,7 @@ python tools/check_env.py
 
 ```bash
 # 有网机器导出
-docker save ghcr.io/zhh9126/backup-platform:v1.4.8 -o backup-platform.tar
+docker save ghcr.io/zhh9126/backup-platform:v1.4.9 -o backup-platform.tar
 # 内网机器导入
 docker load -i backup-platform.tar
 ```
@@ -479,6 +479,24 @@ docker build -t backup-platform:local .
 - 默认账号请立即修改（首登会标记 `must_change_password`）；生产环境建议限制来源 IP
 
 ## 更新日志
+
+### v1.4.9（2026-09-16）
+
+- **数据迁移 / 同步真实端到端测试与六个缺陷修复（本次重点）**：对 MySQL 8.0.40 / MySQL 5.7.44 / MariaDB 10.11.19 / PostgreSQL 14.12 四实例实跑 **9 条真实链路**（4 条迁移 + 5 条同步，含单表与全库 `full_db_migrate`）。核验口径为直接查目标库行数、样本值与 `information_schema` 的主键 / 自增 / 列类型 / 默认值，**不采信平台状态**。
+  - **自增丢失**：MySQL/MariaDB 源的自增只存在于 `INFORMATION_SCHEMA.EXTRA`（`COLUMN_DEFAULT` 为 NULL），目标表因此丢自增，后续写入主键冲突；改为还原 `AUTO_INCREMENT`，非主键自增列补 `UNIQUE KEY`。
+  - **PG → MySQL 整表建表失败**：PG serial 的 `nextval('seq'::regclass)` 被直接拼进 MySQL DDL 报 1064；新增 `_mysql_default()`，序列默认值转自增、函数默认值换算、`'x'::type` 字面量剥除类型转换，无法换算的原生表达式不生成 DEFAULT（宁可缺默认值也不让整表建不起来）。
+  - **时间默认值精度**：`DATETIME(6) DEFAULT CURRENT_TIMESTAMP` 报 1067，改为与列精度一致的 `CURRENT_TIMESTAMP(6)`。
+  - **跨源类型名归一化缺失**：PG 的 `CHARACTER VARYING` 取首词后匹配不到分支而落到兜底 `TEXT`，`varchar(50)/(100)` 长度丢失；新增异源类型名归一化表。
+  - **"假成功"掩盖失败**：全库迁移 success 只看行级错误数，整表建表失败时"读 0 写 0 错误 0"被判成功，直到校验阶段才抛难定位的错误；改为有失败表一律判失败。
+  - **元数据契约**：`ColumnMeta` 的 `is_primary` / `auto_increment` 由插件间动态属性正规化为字段。
+  - **目标侧保真实测**：`id int(11) auto_increment`（真实插入得 id=6）、`varchar(50)`、`decimal(12,3) DEFAULT 0.000`、`datetime DEFAULT CURRENT_TIMESTAMP`、主键 `PRIMARY KEY (id)` 全部保留。
+- **首页运营态势补齐四项此前标注未实现的指标**：恢复演练通过率（只计已出结果的演练，pending/running 不计入分母）、副本异地复制成功率、失败率环比、保护对象覆盖率；`_insights()` 的保护态势与近 7 天趋势改为 **SQL 全表聚合**，避免"最近 500 条采样"把多数任务误判为从未备份。
+- **备份恢复链路稳健性**：跨主机恢复支持 zstd/gzip 产物解压（目标机无解压工具时在平台侧解压，遵守数据库服务器零安装）、远端 mysql 绝对路径注入、剥离 `mysqldump --databases` 自带 `CREATE DATABASE/USE`（否则数据被写回源库名）、导入前清 GTID 避免 1840、远端真实错误回传；新增 `_run_with_stdin` 保证 BLOB 与二进制列无损；Oracle 连接串口令加引号与 expdp `DIRECTORY` 必填（ORA-39145）；SQL Server `RESTORE ... WITH MOVE` 位置修正；分层复制支持目录型产物打包。
+- **新增 `scripts/api_audit.py`**：自动发现全部 `/api` 路由并逐个真实请求，抓 5xx、非 JSON 响应、200 但业务失败、写接口错误处理不当与鉴权缺失五类缺陷（与压测脚本互补：压测看并发吞吐，本脚本看正确性）。
+- **文档**：新增设计思想、产品设计说明书（含 G1–G13 产品化差距清单）与 Acronis / Yak Ops 两份对标分析。
+- **回归**：`test_link_sources_contract` + `test_rt_journal` **59 passed**；全量 pytest 用 `git archive HEAD` 快照做同命令基线对比，**171 failed / 291 passed → 170 failed / 292 passed**，零回归且净修复 1 条（`/rt-timeline` 用例过期，已改为断言跳转目标的承载页）。
+
+> 完整测试矩阵、缺陷根因与核验记录见 [readme_20260916.md](readme_20260916.md) 第八章。
 
 ### v1.4.8（2026-09-16）
 
