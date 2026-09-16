@@ -1986,8 +1986,14 @@ class MySQLEngine(BackupEngine):
             # - 未指定 target_db 时沿用备份中的库名，可走表级并行导入
             if target_db:
                 raw = self._read_decompressed(backup_path)
+                # 二进制安全：mysqldump 产物中的 BLOB / 二进制列可能含非 UTF-8 字节，
+                # 若用 errors="ignore" 解码会把这些字节丢弃，导致 INSERT 语句被截断
+                # （ERROR 1064 near ...）。surrogateescape 是无损往返编解码，
+                # 配合 _run_with_stdin 的同款编码可把原始字节原样送进 mysql。
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", "surrogateescape")
                 filtered = "\n".join(
-                    ln for ln in raw.decode("utf-8", "ignore").split("\n")
+                    ln for ln in raw.split("\n")
                     if not re.match(r"(?i)^\s*(CREATE\s+DATABASE|USE\s)", ln)
                 )
                 # 8.0→低版本/MariaDB 兼容：MySQL 8.0 dump 特有的 utf8mb4_0900_* 排序规则

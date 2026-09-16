@@ -42,6 +42,26 @@ def replicate_to_tiers(backup_path: str, task: dict, record_id: int,
         log.warning("[TierReplicate] 备份文件不存在，跳过三级复制: %s", backup_path)
         return result
 
+    # 目录型产物（xtrabackup 物理备份集、全实例解包目录等）需先打包：
+    # 下游 _replicate_to_target 按单文件读取，直接传目录会抛 IsADirectoryError，
+    # 且带重试的任务会按固定间隔反复报错刷屏。
+    packed_tmp = None
+    if os.path.isdir(backup_path):
+        try:
+            import tarfile
+            import tempfile
+            packed_tmp = os.path.join(
+                tempfile.gettempdir(),
+                f"bkp_tier_{record_id}_{int(time.time())}.tar.gz")
+            with tarfile.open(packed_tmp, "w:gz") as _tf:
+                _tf.add(backup_path, arcname=os.path.basename(backup_path.rstrip("/")))
+            log.info("[TierReplicate] 目录型产物已打包待复制: %s -> %s (%d bytes)",
+                     backup_path, packed_tmp, os.path.getsize(packed_tmp))
+            backup_path = packed_tmp
+        except Exception as exc:
+            log.warning("[TierReplicate] 目录型产物打包失败，跳过三级复制: %s", exc)
+            return result
+
     strategy = _get_replication_strategy(log)
 
     timing = strategy.get("timing", "immediate")
@@ -122,6 +142,11 @@ def replicate_to_tiers(backup_path: str, task: dict, record_id: int,
     log.info("[TierReplicate] 完成: minio=%s s3=%s local=%s tape=%s → %s",
              result.get("minio"), result.get("s3"), result.get("local"),
              result.get("tape"), final_tier)
+    if packed_tmp and os.path.exists(packed_tmp):
+        try:
+            os.unlink(packed_tmp)
+        except Exception:
+            pass
     return result
 
 

@@ -114,13 +114,41 @@ def cross_host_restore(db_type: str, backup_path: str, target_host_info: dict,
 
     log(f"跨主机恢复: {db_type} -> {target_host_info.get('hostname')}")
     client = _build_ssh(target_host_info)
+    tmp_plain = None
     try:
+        from core.remote_dump import _resolve_remote_bin
+        # 压缩产物处理：平台默认 zstd 压缩。优先在目标机解压（有 zstd/gunzip）；
+        # 目标机没有解压工具时（用户要求"数据库服务器不装任何工具"），在平台侧
+        # 解压后上传明文，保证离线/免安装场景也能恢复。
+        upload_path = backup_path
+        lower_bp = backup_path.lower()
+        if lower_bp.endswith(".zst") or lower_bp.endswith(".gz"):
+            _tool = "zstd" if lower_bp.endswith(".zst") else "gunzip"
+            if not (_resolve_remote_bin(client, "zstd") if _tool == "zstd"
+                    else (_resolve_remote_bin(client, "gunzip")
+                          or _resolve_remote_bin(client, "gzip"))):
+                import subprocess as _sp
+                import tempfile as _tf
+                tmp_plain = _tf.NamedTemporaryFile(
+                    prefix="bk_xrestore_", suffix=".sql", delete=False).name
+                _dec = (["zstd", "-dc", backup_path] if _tool == "zstd"
+                        else ["gunzip", "-c", backup_path])
+                with open(tmp_plain, "wb") as _out:
+                    _r = _sp.run(_dec, stdout=_out, stderr=_sp.PIPE, timeout=3600)
+                if _r.returncode != 0:
+                    return {"ok": False,
+                            "message": f"平台侧解压失败（{_tool}）: "
+                                       f"{_r.stderr.decode('utf-8','replace')[:300]}"}
+                upload_path = tmp_plain
+                log(f"目标机无 {_tool}，已在平台侧解压为明文上传: "
+                    f"{os.path.getsize(tmp_plain)} bytes")
+
         ts = time.strftime("%Y%m%d_%H%M%S")
-        fname = f"bk_restore_{ts}_{os.path.basename(backup_path)}"
+        fname = f"bk_restore_{ts}_{os.path.basename(upload_path)}"
         remote = f"/tmp/{fname}"
-        local_size = os.path.getsize(backup_path)
-        log(f"SFTP 上传: {backup_path}({local_size} bytes) -> {remote}")
-        up_size = _sftp_upload(client, backup_path, remote, log)
+        local_size = os.path.getsize(upload_path)
+        log(f"SFTP 上传: {upload_path}({local_size} bytes) -> {remote}")
+        up_size = _sftp_upload(client, upload_path, remote, log)
         log(f"上传完成: 远端 {up_size} bytes")
 
         # 构造恢复命令
@@ -128,9 +156,10 @@ def cross_host_restore(db_type: str, backup_path: str, target_host_info: dict,
         # 完成 SCRAM 认证），需从运行中进程解析正确版本，注入命令构造。
         if db_type == "mysql":
             # MySQL 8.4+ 移除了 RESET MASTER，需根据目标实例版本选择重置语句
-            from core.remote_dump import _resolve_remote_bin
             extra = dict(extra)
             mysql_bin = _resolve_remote_bin(client, "mysql") or "mysql"
+            # 注入绝对路径，命令构造处统一使用（远端 PATH 常没有 mysql）
+            extra["_mysql_bin"] = mysql_bin
             mhost, mport = "127.0.0.1", extra.get("source_port") or 3306
             muser = extra.get("source_username") or "root"
             mpw = extra.get("source_password") or ""
@@ -202,6 +231,11 @@ def cross_host_restore(db_type: str, backup_path: str, target_host_info: dict,
         log(f"跨主机恢复异常: {e}")
         return {"ok": False, "message": f"跨主机恢复异常: {e}"}
     finally:
+        if tmp_plain and os.path.exists(tmp_plain):
+            try:
+                os.unlink(tmp_plain)
+            except Exception:
+                pass
         try:
             client.close()
         except Exception:
@@ -309,11 +343,21 @@ def _build_restore_cmd(db_type: str, remote_pkg: str, target_db: str,
         user = extra.get("source_username") or "root"
         pw = extra.get("source_password") or ""
         pw_esc = pw.replace("'", "'\\''")
-        # 先解压 .gz（如果是 .gz）
+        # 远端 mysql 客户端绝对路径（cross_host_restore 解析注入）；
+        # 目标机 PATH 里常常没有 mysql（源码安装于 /opt/mysql*/bin）
+        mysql_bin = extra.get("_mysql_bin") or "mysql"
+        # 解压：平台默认 zstd，历史产物可能是 gzip；明文则直接回放。
+        # 注意 .zst/.gz 必须解压后再交给 mysql，直接喂压缩流必然 rc=1。
         actual = remote_pkg
         if remote_pkg.endswith(".gz"):
             actual = remote_pkg[:-3]
             pre = f"gunzip -c '{remote_pkg}' > '{actual}' && "
+        elif remote_pkg.endswith(".zst"):
+            actual = remote_pkg[:-4]
+            pre = f"zstd -dc '{remote_pkg}' > '{actual}' && "
+        elif remote_pkg.endswith(".bz2"):
+            actual = remote_pkg[:-4]
+            pre = f"bunzip2 -c '{remote_pkg}' > '{actual}' && "
         else:
             pre = ""
         target = f"'{target_db}'" if target_db else ""
@@ -321,18 +365,28 @@ def _build_restore_cmd(db_type: str, remote_pkg: str, target_db: str,
         # 否则导入报 ERROR 1049 Unknown database（全实例路径已有自动建库，
         # 单库跨主机路径此前缺失）。
         create_part = ""
+        strip_part = ""
         if target_db:
             safe_db = str(target_db).replace("`", "")
             create_part = (
-                f"mysql -h {host} -P {port} -u {user} -p'{pw_esc}' "
+                f"{mysql_bin} -h {host} -P {port} -u {user} -p'{pw_esc}' "
                 f"-e 'CREATE DATABASE IF NOT EXISTS `{safe_db}`' && "
             )
-        # 恢复前清空 GTID，避免含 GTID_PURGED 的备份导入时报 1840
+            # mysqldump --databases 产物自带 CREATE DATABASE/USE，会把数据
+            # 写回源库名（目标库变空壳、甚至污染源库），导入前必须剥离。
+            # 用 grep -a 按文本方式过滤，避免二进制列被当作 binary 文件跳过。
+            strip_part = (
+                f"LC_ALL=C grep -avE '^(CREATE DATABASE|USE )' '{actual}' "
+                f"> '{actual}.strip' && mv -f '{actual}.strip' '{actual}' && "
+            )
+        # 恢复前清空 GTID，避免含 GTID_PURGED 的备份导入时报 1840；
+        # 无 RELOAD 权限时不应阻断导入，故容错处理（导入本身仍会报真实错误）
         reset_sql = extra.get("_mysql_reset_sql") or "RESET MASTER"
         return (
-            f"{pre}{create_part}"
-            f"mysql -h {host} -P {port} -u {user} -p'{pw_esc}' -e '{reset_sql}' && "
-            f"mysql -h {host} -P {port} -u {user} -p'{pw_esc}' {target} < '{actual}'"
+            f"{pre}{strip_part}{create_part}"
+            f"{mysql_bin} -h {host} -P {port} -u {user} -p'{pw_esc}' "
+            f"-e '{reset_sql}' || true; "
+            f"{mysql_bin} -h {host} -P {port} -u {user} -p'{pw_esc}' {target} < '{actual}'"
         )
 
     elif db_type == "postgresql":
@@ -348,6 +402,12 @@ def _build_restore_cmd(db_type: str, remote_pkg: str, target_db: str,
         if remote_pkg.endswith(".gz"):
             actual = remote_pkg[:-3]
             pre = f"gunzip -c '{remote_pkg}' > '{actual}' && "
+        elif remote_pkg.endswith(".zst"):
+            actual = remote_pkg[:-4]
+            pre = f"zstd -dc '{remote_pkg}' > '{actual}' && "
+        elif remote_pkg.endswith(".bz2"):
+            actual = remote_pkg[:-4]
+            pre = f"bunzip2 -c '{remote_pkg}' > '{actual}' && "
         else:
             pre = ""
         if remote_pkg.endswith(".dump"):

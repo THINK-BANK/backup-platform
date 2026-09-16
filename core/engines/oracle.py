@@ -73,6 +73,20 @@ class OracleEngine(BackupEngine):
                                  self.task_name, raw)
             return {}
 
+    @staticmethod
+    def _quote_password(pw: str) -> str:
+        """给连接串中的口令加引号。
+
+        连接串 user/pw@//host:port/service 会以「第一个 @」作为连接描述符的
+        分隔符，口令自身含 @（如 Ceshi@133）时会被提前截断，导致
+        ORA-12154 "TNS: 无法解析指定的连接标识符"。官方推荐做法是用双引号
+        包裹口令，Oracle 客户端会将其整体视为口令。
+        """
+        pw = pw or ""
+        if len(pw) >= 2 and pw.startswith('"') and pw.endswith('"'):
+            return pw
+        return f'"{pw}"'
+
     def _conn_string(self, service: str) -> str:
         """构造 Oracle 连接串：user/password@//host:port/service_name。
 
@@ -84,7 +98,7 @@ class OracleEngine(BackupEngine):
         pw = db.decrypt_secret(self.task.get("password") or "")
         host = self.task.get("host") or "localhost"
         port = self.task.get("port") or 1521
-        return f"{user}/{pw}@//{host}:{port}/{service}"
+        return f"{user}/{self._quote_password(pw)}@//{host}:{port}/{service}"
 
     def _service_name(self) -> str:
         """解析 Oracle service name，按优先级返回非空值。
@@ -214,7 +228,10 @@ class OracleEngine(BackupEngine):
         ts = self._timestamp()
         dp_dir = ""
         try:
-            dp_dir = self._query_dp_dir(client, f"{username}/{pw}@//{self.task.get('host')}:{port}/{service}")
+            dp_dir = self._query_dp_dir(
+                client,
+                f"{username}/{self._quote_password(pw)}"
+                f"@//{self.task.get('host')}:{port}/{service}")
             if not dp_dir:
                 dp_dir = self._query_dp_dir(client)
         except Exception as e:
@@ -233,10 +250,12 @@ class OracleEngine(BackupEngine):
                 return BackupResult(success=False, status=BackupStatus.FAILED,
                                     message="远端未找到 impdp，无法执行 SQLFILE 校验")
             mode_args = f"SCHEMAS={schemas_arg}" if schemas_arg else ""
+            verify_conn = f"{username}/{self._quote_password(pw)}@//127.0.0.1:{port}/{service}"
             inner = (f"export PATH=$ORACLE_HOME/bin:$PATH; "
-                     f"{shlex.quote(impdp_bin)} {username}/{pw}@//127.0.0.1:{port}/{service} "
+                     f"{shlex.quote(impdp_bin)} {shlex.quote(verify_conn)} "
                      f"DUMPFILE=platform_verify_{ts}.dmp SQLFILE={sqlfile} "
-                     f"NOLOGFILE=Y {mode_args}")
+                     # DIRECTORY 为必填：缺省时报 ORA-39145（目录对象不能为空）
+                     f"DIRECTORY=DATA_PUMP_DIR NOLOGFILE=Y {mode_args}")
             shell = f"su - oracle -c {shlex.quote(inner)}"
             start = _time.time()
             out, err, rc = _ssh_exec_pipe(
@@ -838,7 +857,7 @@ class OracleEngine(BackupEngine):
         pw = db.decrypt_secret(self.task.get("password") or "")
         # 远端脚本在数据库服务器本机执行：listener 对外部 IP 的注册可能
         # 不稳定（实测 129 出现 ORA-12514），本机回环最可靠 → 优先 127.0.0.1
-        conn_easy = f"{username}/{pw}@//127.0.0.1:{port}/{service}"
+        conn_easy = f"{username}/{self._quote_password(pw)}@//127.0.0.1:{port}/{service}"
 
         client = remote_dump._connect(ssh_host)
 
@@ -880,7 +899,9 @@ class OracleEngine(BackupEngine):
             "#!/bin/bash\n"
             "export PATH=$ORACLE_HOME/bin:$PATH\n"
             f"EXPDP_BIN={shlex.quote(expdp_bin)}\n"
-            f"\"$EXPDP_BIN\" {conn_easy} {mode_args} DIRECTORY=DATA_PUMP_DIR "
+            # 连接串整体单引号包裹：口令可能因含特殊字符而带双引号，
+            # 直接拼接会被 shell 吃掉引号。
+            f"\"$EXPDP_BIN\" '{conn_easy}' {mode_args} DIRECTORY=DATA_PUMP_DIR "
             f"DUMPFILE={dmp_name} LOGFILE={log_name}\n"
             "RC=$?\n"
             "if [ $RC -ne 0 ]; then\n"
@@ -1074,7 +1095,7 @@ class OracleEngine(BackupEngine):
 
         client = remote_dump._connect(target_host_info)
         try:
-            restore_conn = f"{username}/{pw}@//127.0.0.1:{port}/{service}"
+            restore_conn = f"{username}/{self._quote_password(pw)}@//127.0.0.1:{port}/{service}"
             dp_dir = self._query_dp_dir(client, restore_conn) or self._query_dp_dir(client)
             if not dp_dir:
                 return BackupResult(
@@ -1098,8 +1119,9 @@ class OracleEngine(BackupEngine):
                                 "ORACLE_HOME 安装目录），请确认数据库软件安装完整")
                 mode_args = f"SCHEMAS={schemas_arg}" if schemas_arg else ""
                 inner = (f"export PATH=$ORACLE_HOME/bin:$PATH; "
-                         f"{shlex.quote(impdp_bin)} {username}/{pw}@//127.0.0.1:{port}/{service} "
+                         f"{shlex.quote(impdp_bin)} {shlex.quote(restore_conn)} "
                          f"DUMPFILE={dmp_name} LOGFILE={log_name} "
+                         f"DIRECTORY=DATA_PUMP_DIR "
                          f"TABLE_EXISTS_ACTION=REPLACE {mode_args}")
                 shell = f"su - oracle -c {shlex.quote(inner)}"
                 start = time.time()

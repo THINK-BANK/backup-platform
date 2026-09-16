@@ -708,9 +708,9 @@ class BackupEngine:
         except FileNotFoundError as e:
             return {"returncode": -2, "stdout": "", "stderr": f"命令不存在: {e}"}
 
-    def _run_with_stdin(self, cmd: List[str], text: str, env_extra: dict = None,
+    def _run_with_stdin(self, cmd: List[str], text, env_extra: dict = None,
                         timeout: int = 3600) -> dict:
-        """执行命令并把一段文本作为 stdin 喂入（跨平台，不依赖 shell 管道）。"""
+        """执行命令并把一段文本（str 或 bytes）作为 stdin 喂入（跨平台，不依赖 shell 管道）。"""
         env = os.environ.copy()
         pw = db.decrypt_secret(self.task.get("password") or "")
         if pw:
@@ -723,10 +723,14 @@ class BackupEngine:
             cmd = self._translate_shell_script(cmd[2])
         self.logger.info("[%s] 执行命令(stdin): %s", self.task_name, " ".join(
             c if not c.startswith("DB_BACKUP_PASSWORD") else "***" for c in cmd))
+        # 二进制安全：bytes 原样透传；str 用 surrogateescape 编码，保证
+        # 非 UTF-8 字节（BLOB / 二进制列 / 自定义转储）在"文本→字节"往返中无损。
+        stdin_data = text if isinstance(text, bytes) else text.encode(
+            "utf-8", "surrogateescape")
         try:
             proc = subprocess.run(
                 cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                input=text.encode("utf-8", "ignore"),
+                input=stdin_data,
                 timeout=timeout)
             return {"returncode": proc.returncode,
                     "stdout": proc.stdout.decode("utf-8", "ignore"),
@@ -1570,9 +1574,19 @@ class BackupEngine:
         res = cross_host.cross_host_restore(
             db_type=self.db_type, backup_path=backup_path,
             target_host_info=target, target_db=target_db, extra=extra, log=log)
-        return BackupResult(
+        # 把远端真实输出带回给用户：此前只返回"恢复失败(rc=1)"，看不到原因
+        detail = ""
+        if not res.get("ok"):
+            detail = (res.get("stderr_tail") or res.get("stdout_tail") or "").strip()
+        msg = res.get("message", "")
+        if detail:
+            msg = f"{msg} | 远端输出: {detail[-500:]}"
+        result = BackupResult(
             success=res["ok"], status=BackupStatus.SUCCESS if res["ok"] else BackupStatus.FAILED,
-            backup_path=backup_path, message=res.get("message", ""))
+            backup_path=backup_path, message=msg)
+        result.detail_log = "远端 stdout/stderr:\n" + (
+            (res.get("stdout_tail") or "") + "\n" + (res.get("stderr_tail") or ""))[:4000]
+        return result
 
     def list_databases(self) -> List[str]:
         """可选：列出可备份的库/实例名。"""

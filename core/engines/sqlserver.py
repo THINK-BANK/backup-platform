@@ -90,13 +90,18 @@ class SQLServerEngine(BackupEngine):
     class _FallToLocal(Exception):
         """远端缺工具（零安装原则）→ 跳转平台服务端本机执行。"""
 
-    def _exec_tsql(self, tsql: str, ssh_host: dict = None, timeout: int = 7200):
+    def _exec_tsql(self, tsql: str, ssh_host: dict = None, timeout: int = 7200,
+                   col_sep: str = None):
         """执行 T-SQL，返回 (rc, stdout, stderr)。
 
         优先经 SSH 在数据库服务器上执行（sqlcmd -S 127.0.0.1,<port>）；
         未传 ssh_host 时自动按任务解析（含任务级 SSH 凭据，免纳管），
         完全无 SSH 通道时回退本机 sqlcmd 连任务地址。
         密码走 SQLCMDPASSWORD 环境变量。
+
+        col_sep：额外指定 sqlcmd 列分隔符（-s），供需要按列拆分结果集的场景
+        使用（如 RESTORE FILELISTONLY）。默认不指定，保持 sqlcmd 默认空格对齐
+        输出，兼容既有的单行/单列解析逻辑。
         """
         if ssh_host is None:
             from core import remote_dump
@@ -105,6 +110,8 @@ class SQLServerEngine(BackupEngine):
         pw = db.decrypt_secret(self.task.get("password") or "")
         port = int(self.task.get("port") or 1433)
         tp = self._task_tool_path()
+        # 列分隔符参数：默认不带，避免影响既有解析
+        sep_arg = f' -s "{col_sep}"' if col_sep else ""
 
         from core import remote_dump
         from core.engines.file import _ssh_exec_pipe
@@ -116,7 +123,8 @@ class SQLServerEngine(BackupEngine):
                     # Windows：cmd 语法，set 注入密码后执行；-b 使 T-SQL 错误返回非零
                     safe_pw = str(pw).replace("^", "^^")
                     inner = (f"set SQLCMDPASSWORD={safe_pw}&& "
-                             f"sqlcmd -S 127.0.0.1,{port} -U {user} -W -b -Q \"{tsql}\"")
+                             f"sqlcmd -S 127.0.0.1,{port} -U {user} -W -b{sep_arg} "
+                             f"-Q \"{tsql}\"")
                     out, err, rc = _ssh_exec_pipe(
                         client, remote_dump._wrap_login(inner), timeout=timeout)
                     return rc, _to_text(out), _to_text(err)
@@ -137,7 +145,7 @@ class SQLServerEngine(BackupEngine):
                 script = (
                     f"set -o pipefail; "
                     f"export SQLCMDPASSWORD={_sh(pw)}; "
-                    f"{_sh(sqlcmd)} -S 127.0.0.1,{port} -U {_sh(user)} -W -b "
+                    f"{_sh(sqlcmd)} -S 127.0.0.1,{port} -U {_sh(user)} -W -b{sep_arg} "
                     f"-Q {_q(tsql)}"
                 )
                 out, err, rc = _ssh_exec_pipe(
@@ -167,7 +175,10 @@ class SQLServerEngine(BackupEngine):
         if pw:
             env["SQLCMDPASSWORD"] = pw
         cmd = [sqlcmd, "-S", f"{self.task.get('host')},{port}", "-U", user,
-               "-W", "-b", "-Q", tsql]
+               "-W", "-b"]
+        if col_sep:
+            cmd += ["-s", col_sep]
+        cmd += ["-Q", tsql]
         p = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=timeout, env=env)
         return p.returncode, p.stdout or "", p.stderr or ""
@@ -448,15 +459,18 @@ class SQLServerEngine(BackupEngine):
         try:
             rc, out, _e = self._exec_tsql(
                 f"RESTORE FILELISTONLY FROM DISK = N'{disk_path}'",
-                ssh_host=ssh_host, timeout=300)
+                ssh_host=ssh_host, timeout=300, col_sep="|")
             if rc == 0:
                 moves = self._build_move_clauses(out, target_db, win, ssh_host)
         except Exception:
             moves = ""  # 解析失败时不阻塞：同实例恢复通常无需 MOVE
 
         # 3) 官方还原：RESTORE DATABASE ... WITH MOVE, REPLACE, RECOVERY
+        # T-SQL 语法要求 MOVE 必须位于 WITH 之后：
+        # RESTORE DATABASE [db] FROM DISK = N'..' WITH MOVE .., REPLACE, RECOVERY
+        # moves 为空时同样成立（退化为 WITH REPLACE, RECOVERY）。
         tsql = (f"RESTORE DATABASE [{target_db}] FROM DISK = N'{disk_path}' "
-                f"{moves}WITH REPLACE, RECOVERY")
+                f"WITH {moves}REPLACE, RECOVERY")
         start = time.time()
         rc, out, err = self._exec_tsql(tsql, ssh_host=ssh_host)
         if rc != 0:
