@@ -339,58 +339,112 @@ class OracleEngine(BackupEngine):
             except Exception:
                 pass
 
-        # 2) RMAN RESTORE DATABASE VALIDATE（全部备份片）
-        with sftp.open("/tmp/platform_verify_rman.cmd", "w") as f:
-            f.write("RUN {\n  RESTORE DATABASE VALIDATE;\n}\nEXIT;\n")
-        shell = remote_dump._wrap_login(
-            f"su - oracle -c {shlex.quote(f'{shlex.quote(rman_bin)} target / @/tmp/platform_verify_rman.cmd')}")
-        start = _time.time()
-        out, err, rc = _ssh_exec_pipe(client, shell, timeout=7200)
-        duration = round(_time.time() - start, 3)
-        out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else (out or "")
-        validate_ok = (rc == 0 and "validation complete" in out_text.lower()
-                       and "validation failed" not in out_text.lower())
+        # 2) 备份片推回 + 编目 + RMAN RESTORE DATABASE VALIDATE
+        #    物理备份完成后平台会清理远端残留（数据库服务器零残留设计），而
+        #    RESTORE DATABASE VALIDATE 只能读**远端真实存在且已编目**的备份片；
+        #    直接 VALIDATE 会因 ORA-19505「无法识别文件」必然失败（168 环境
+        #    Oracle 11g 实测暴露）。因此校验前把平台本地保存的备份片推回原目录
+        #    并 CATALOG 进 RMAN 仓库，校验结束后再清理，既完成校验又保住零残留。
+        pushed = []
+        remote_dir = ""
         try:
-            sftp.remove("/tmp/platform_verify_rman.cmd")
-        except Exception:
-            pass
+            import glob as _glob
+            local_dir = os.path.dirname(os.path.abspath(backup_path or ""))
+            # 优先采用备份时落盘 manifest 记录的远端目录，确保与 RMAN FORMAT 一致
+            for _mf in _glob.glob(os.path.join(local_dir, "*_rman_manifest.txt")):
+                try:
+                    with open(_mf, "r", encoding="utf-8", errors="replace") as _fh:
+                        for _line in _fh:
+                            if _line.strip().startswith("remote_dir:"):
+                                remote_dir = _line.split(":", 1)[1].strip()
+                except Exception:
+                    pass
+                if remote_dir:
+                    break
+            if not remote_dir:
+                remote_dir = "/u01/app/oracle/backup"
+            for _p in sorted(_glob.glob(os.path.join(local_dir, "*.bkp"))):
+                _rp = f"{remote_dir}/{os.path.basename(_p)}"
+                sftp.put(_p, _rp)
+                pushed.append(_rp)
+            if pushed:
+                _ssh_exec_pipe(
+                    client,
+                    "chown oracle:oinstall " + " ".join(shlex.quote(x) for x in pushed)
+                    + " && chmod 640 " + " ".join(shlex.quote(x) for x in pushed),
+                    timeout=120)
+                self.logger.info("[%s] 已推回 %d 个备份片到 %s 供 VALIDATE 使用",
+                                 self.task_name, len(pushed), remote_dir)
+        except Exception as e:
+            self.logger.warning("[%s] 推回备份片失败，VALIDATE 可能不可用: %s",
+                                self.task_name, e)
+
+        validate_ok = False
+        out_text = ""
+        rc = -1
+        duration = 0.0
+        restore_detail = "VALIDATE 通过（数据文件抽取跳过：未解析到数据文件编号）"
+        try:
+            catalog_line = ""
+            if pushed:
+                catalog_line = f"  CATALOG START WITH '{remote_dir}' NOPROMPT;\n"
+            with sftp.open("/tmp/platform_verify_rman.cmd", "w") as f:
+                f.write(f"RUN {{\n{catalog_line}  RESTORE DATABASE VALIDATE;\n}}\nEXIT;\n")
+            shell = remote_dump._wrap_login(
+                f"su - oracle -c {shlex.quote(f'{shlex.quote(rman_bin)} target / @/tmp/platform_verify_rman.cmd')}")
+            start = _time.time()
+            out, err, rc = _ssh_exec_pipe(client, shell, timeout=7200)
+            duration = round(_time.time() - start, 3)
+            out_text = out.decode("utf-8", "replace") if isinstance(out, bytes) else (out or "")
+            validate_ok = (rc == 0 and "validation complete" in out_text.lower()
+                           and "validation failed" not in out_text.lower())
+
+            # 3) 真实抽取最小数据文件到暂存目录（从备份片还原实际文件）。
+            #    必须在清理推回的备份片**之前**执行：备份片一旦删除，RMAN 读取时
+            #    只会报 ORA-19505「无法识别文件」，抽取必然失败（168 环境实测）。
+            if validate_ok and df_no:
+                stage_dir = f"/var/tmp/platform_restore_test/{ts}"
+                pre = (f"mkdir -p {stage_dir} && chown oracle {stage_dir} && chmod 755 {stage_dir}")
+                _ssh_exec_pipe(client, remote_dump._wrap_login(pre), timeout=30)
+                with sftp.open("/tmp/platform_verify_df2.cmd", "w") as f:
+                    f.write(f"RUN {{\n"
+                            f"  SET NEWNAME FOR DATAFILE {df_no} TO '{stage_dir}/df_{df_no}.dbf';\n"
+                            f"  RESTORE DATAFILE {df_no};\n"
+                            f"}}\nEXIT;\n")
+                shell = remote_dump._wrap_login(
+                    f"su - oracle -c {shlex.quote(f'{shlex.quote(rman_bin)} target / @/tmp/platform_verify_df2.cmd')}")
+                out2, _err, rc2 = _ssh_exec_pipe(client, shell, timeout=3600)
+                out2_text = out2.decode("utf-8", "replace") if isinstance(out2, bytes) else (out2 or "")
+                # 确认真实文件落盘
+                stat_cmd = f"ls -la {stage_dir}/ 2>/dev/null"
+                out3, _e3, rc3 = _ssh_exec_pipe(client, remote_dump._wrap_login(stat_cmd), timeout=20)
+                ls_text = out3.decode("utf-8", "replace") if isinstance(out3, bytes) else (out3 or "")
+                # 清理暂存
+                _ssh_exec_pipe(client, remote_dump._wrap_login(f"rm -rf {stage_dir}"), timeout=30)
+                if rc2 == 0 and f"df_{df_no}" in ls_text:
+                    restore_detail = (f"RESTORE VALIDATE 通过；并已从备份片真实抽取数据文件 "
+                                      f"#{df_no} 到暂存目录验证后清理（真实恢复证据）")
+                else:
+                    restore_detail = ("RESTORE VALIDATE 通过；数据文件抽取未完成"
+                                      f"(rc={rc2})：" + out2_text[-300:].replace("\n", " "))
+        finally:
+            # 无论成败都清理推回的备份片与临时脚本，保住「数据库服务器零残留」
+            for _rp in pushed:
+                try:
+                    sftp.remove(_rp)
+                except Exception:
+                    pass
+            for _tmp in ("/tmp/platform_verify_rman.cmd", "/tmp/platform_verify_df2.cmd"):
+                try:
+                    sftp.remove(_tmp)
+                except Exception:
+                    pass
+
         if not validate_ok:
             return BackupResult(
                 success=False, status=BackupStatus.FAILED,
                 duration_sec=duration, stdout=out_text,
                 message=f"RMAN RESTORE VALIDATE 未通过(rc={rc}): {out_text[-1000:]}")
-
-        # 3) 真实抽取最小数据文件到暂存目录（从备份片还原实际文件）
-        restore_detail = "VALIDATE 通过（数据文件抽取跳过：未解析到数据文件编号）"
-        if df_no:
-            stage_dir = f"/var/tmp/platform_restore_test/{ts}"
-            pre = (f"mkdir -p {stage_dir} && chown oracle {stage_dir} && chmod 755 {stage_dir}")
-            _ssh_exec_pipe(client, remote_dump._wrap_login(pre), timeout=30)
-            with sftp.open("/tmp/platform_verify_df2.cmd", "w") as f:
-                f.write(f"RUN {{\n"
-                        f"  SET NEWNAME FOR DATAFILE {df_no} TO '{stage_dir}/df_{df_no}.dbf';\n"
-                        f"  RESTORE DATAFILE {df_no};\n"
-                        f"}}\nEXIT;\n")
-            shell = remote_dump._wrap_login(
-                f"su - oracle -c {shlex.quote(f'{shlex.quote(rman_bin)} target / @/tmp/platform_verify_df2.cmd')}")
-            out2, _err, rc2 = _ssh_exec_pipe(client, shell, timeout=3600)
-            out2_text = out2.decode("utf-8", "replace") if isinstance(out2, bytes) else (out2 or "")
-            # 确认真实文件落盘
-            stat_cmd = f"ls -la {stage_dir}/ 2>/dev/null"
-            out3, _e3, rc3 = _ssh_exec_pipe(client, remote_dump._wrap_login(stat_cmd), timeout=20)
-            ls_text = out3.decode("utf-8", "replace") if isinstance(out3, bytes) else (out3 or "")
-            # 清理暂存
-            _ssh_exec_pipe(client, remote_dump._wrap_login(f"rm -rf {stage_dir}"), timeout=30)
-            try:
-                sftp.remove("/tmp/platform_verify_df2.cmd")
-            except Exception:
-                pass
-            if rc2 == 0 and f"df_{df_no}" in ls_text:
-                restore_detail = (f"RESTORE VALIDATE 通过；并已从备份片真实抽取数据文件 "
-                                  f"#{df_no} 到暂存目录验证后清理（真实恢复证据）")
-            else:
-                restore_detail = ("RESTORE VALIDATE 通过；数据文件抽取未完成"
-                                  f"(rc={rc2})，请检查磁盘空间")
 
         msg = f"Oracle 物理备份恢复校验：{restore_detail}"
         self.logger.info("[%s] %s", self.task_name, msg)
@@ -804,6 +858,12 @@ class OracleEngine(BackupEngine):
                     mf.write(f"{os.path.basename(p)}\t{sz}\t{db.sha256_file(p)}\n")
 
             hk = ssh_host.get("host_key", "remote")
+            # 已完整拉回 → 清理远端 RMAN 命令脚本（服务器不留产物）。
+            # 失败分支在此之前已 return，脚本保留作为排障证据（message 中会给出路径）。
+            try:
+                sftp.remove(remote_cmd_file)
+            except Exception:
+                pass
             msg = (f"通过 SSH 在 {hk} 以 oracle 用户执行 RMAN 物理备份成功，"
                    f"已拉回 {len(pieces)} 个备份片，共 {db.human_size(total_size)}"
                    f"（主片: {os.path.basename(first_local)}）")
@@ -922,6 +982,7 @@ class OracleEngine(BackupEngine):
                 pass
 
             # 复用探测：上次 expdp 已导出完成但 dmp 拉回中断 → 跳过重跑 expdp
+            remote_sh = ""      # 远端 expdp 包装脚本，成功后一并清理（零残留）
             ready = remote_dump.remote_artifact_ready(client, remote_marker, min_size=1)
             reuse = bool(ready["reusable"])
             if reuse:
@@ -997,9 +1058,11 @@ class OracleEngine(BackupEngine):
             except Exception:
                 local_log = None  # log 缺失不致命
 
-            # 已完整拉回 → 清理远端 dmp/log 与完成标记（服务器不留产物）
+            # 已完整拉回 → 清理远端 dmp/log、完成标记与 expdp 脚本（服务器不留产物）
+            # 注：失败分支在此之前已 return，脚本与日志保留便于排障。
             remote_dump.cleanup_remote_artifacts(
-                client, [remote_dmp, remote_log, remote_marker])
+                client, [remote_dmp, remote_log, remote_marker]
+                + ([remote_sh] if remote_sh else []))
 
             size = os.path.getsize(local_dmp)
             checksum = db.sha256_file(local_dmp)
@@ -1207,6 +1270,28 @@ class OracleEngine(BackupEngine):
             return self._try_cross_host_restore(backup_path, target_host_info,
                                                  kwargs.get("target_db") or "")
 
+        # 恢复路径必须与备份路径对称（2026-09-17 修复，168 环境 Oracle 11g 实测暴露）：
+        # 逻辑备份的实际链路是「SSH 到数据库服务器执行 expdp → dmp 拉回平台本地」，
+        # 因此同机恢复也必须把 dmp **推回数据库服务器**用 impdp 导入，而不是去找
+        # 平台本机的 imp/impdp。此前未指定跨主机目标时会直接落到本机 imp 分支，
+        # 而平台（客户端零安装原则）本就不该装 Oracle 客户端，于是必然失败，
+        # 造成「备份成功但恢复不了」的闭环断裂——灾备产品的致命缺陷。
+        if (backup_path
+                and (backup_path.endswith(".dmp") or backup_path.endswith(".dmp.gz"))
+                and os.path.exists(backup_path)):
+            ssh_host = None
+            try:
+                from core import remote_dump as _rd
+                ssh_host = _rd.resolve_ssh_host(self.task)
+            except Exception as e:
+                self.logger.warning("[%s] 解析 SSH 主机失败，回退本机恢复: %s",
+                                    self.task_name, e)
+            if ssh_host:
+                self.logger.info(
+                    "[%s] 逻辑备份同机恢复：将 dmp 推回 %s 执行 impdp（与备份链路对称）",
+                    self.task_name, ssh_host.get("host_key"))
+                return self._restore_logical_remote(backup_path, ssh_host, kwargs)
+
         if not backup_path:
             msg = "未提供备份路径 backup_path，无法恢复"
             self.logger.error("[%s] %s", self.task_name, msg)
@@ -1335,34 +1420,16 @@ exit;
         with open(script, "w", encoding="utf-8") as f:
             f.write(content)
 
-        # 检查 rman 可用性（本机动态解析 PATH 与常见安装目录，不写死路径）
-        rman = shutil.which("rman")
-        if not rman:
-            for cand_dir in ("/u01/app/oracle/product/*/*/bin",):
-                import glob as _glob
-                hits = sorted(_glob.glob(cand_dir + "/rman"))
-                if hits:
-                    rman = hits[-1]
-                    break
-        if not rman:
-            return BackupResult(
-                success=False, status=BackupStatus.FAILED,
-                backup_path=script,
-                message=("rman 不可用（本机 PATH 与常见 ORACLE_HOME 目录均未找到），"
-                         f"PITR 脚本已生成但未执行：{script}；"
-                         "请在数据库服务器上通过 SSH 通道执行，或在本平台安装 Oracle 客户端"))
-        dur = round(time.time() - start, 3)
-        if ret["returncode"] != 0:
-            return BackupResult(
-                success=False, status=BackupStatus.FAILED,
-                duration_sec=dur, backup_path=script,
-                stderr=ret["stderr"],
-                message=f"RMAN PITR 执行失败: {(ret['stderr'] or '')[:500]}")
+        # PITR 会 RESTORE + RECOVER + OPEN RESETLOGS，属破坏性操作，且按「客户端零安装、
+        # 一切远端动作走 SSH」的设计原则，平台侧不得也不该用本机 rman 直连执行
+        # （connect target / 只在数据库服务器本机有效）。因此这里只生成脚本并诚实返回
+        # 「未执行」，绝不产出假的恢复成功。
         return BackupResult(
-            success=True, status=BackupStatus.SUCCESS,
-            backup_path=script, duration_sec=dur,
-            stdout=ret["stdout"], simulated=False,
-            message=f"Oracle RMAN PITR 成功（恢复到 {target_time}，耗时 {dur}s）")
+            success=False, status=BackupStatus.FAILED,
+            backup_path=script, simulated=False,
+            message=(f"RMAN PITR 脚本已生成但未执行：{script}；"
+                     "请在数据库服务器上（Oracle 用户）执行该脚本，"
+                     "或在「实时备份/PITR」中通过平台 SSH 通道下发"))
 
     def archivelog_backup(self) -> BackupResult:
         """RMAN 归档日志备份（保证 PITR 窗口）。

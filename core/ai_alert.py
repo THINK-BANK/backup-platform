@@ -1869,10 +1869,12 @@ class AIPredictor:
                 # used_pct 未设置或为 0 → 尝试连接 MinIO 实时查询
                 try:
                     from core.storage_backends.minio import MinIOStorageBackend
+                    from core import db as _db
                     backend_cfg = {
                         "endpoint": minio_row.get("endpoint") or "",
                         "access_key": minio_row.get("access_key") or "",
-                        "secret_key": minio_row.get("secret_key") or "",
+                        # 库里存的是密文（enc:），直连 MinIO 前必须解密
+                        "secret_key": _db.decrypt_secret(minio_row.get("secret_key") or ""),
                         "bucket": minio_row.get("bucket") or "backup",
                         "prefix": minio_row.get("prefix") or "",
                         "region": minio_row.get("region") or "",

@@ -14,7 +14,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 **备份 · 恢复 · PITR · 数据迁移 · 数据同步 · 数据对比 · 预校验 · 克隆 · 演练 · 巡检 · AI 告警**
 
-[![Version](https://img.shields.io/badge/Version-v1.4.9-0D9488)](#更新日志)
+[![Version](https://img.shields.io/badge/Version-v1.4.10-0D9488)](#更新日志)
 [![License](https://img.shields.io/badge/License-MIT-green)](#许可证)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED)](#docker-部署含离线运行)
@@ -352,7 +352,7 @@ python tools/check_env.py
 
 ```bash
 # 有网机器导出
-docker save ghcr.io/zhh9126/backup-platform:v1.4.9 -o backup-platform.tar
+docker save ghcr.io/zhh9126/backup-platform:v1.4.10 -o backup-platform.tar
 # 内网机器导入
 docker load -i backup-platform.tar
 ```
@@ -485,6 +485,19 @@ docker build -t backup-platform:local .
 - 默认账号请立即修改（首登会标记 `must_change_password`）；生产环境建议限制来源 IP
 
 ## 更新日志
+
+### v1.4.10（2026-09-17）
+
+- **MySQL 本机（备份平台与数据库同机）全实例备份失败——四个真实缺陷修复（用户反馈，本次重点）**
+  - **根因（内存）**：本机全实例备份用 `capture_output=True` 把**整个** mysqldump 产物读进内存后才写盘。平台与数据库同机时内存被数据库占用，Python 抛 `MemoryError`——而 `MemoryError` 的 `str()` **是空字符串**，最终上报成「MySQL 全实例备份失败: 」这种看不到任何原因的消息；用户侧表现就是"备份跑了 5 分多钟，最后突然失败，产物 0 字节"。已改为 **stdout 直连文件流式落盘**，内存占用恒为管道缓冲大小、与产物大小无关。真实 122MB 库实测：平台 RSS 160→182MB（**仅 +22MB**），4.2 秒成功，包内 `.sql` 未压缩 128,006,222 字节。
+  - **凭据被本机配置覆盖**：平台机的 `/root/.my.cnf` 优先级高于 `MYSQL_PWD`，导致任务里密码填错也能"备份成功"（实际连的是 my.cnf 里的账号）。全实例的枚举库 / mysqldump / 恢复灌入三处已统一加 `--no-defaults`，密码错误现在会**如实失败**并提示 `ERROR 1045 Access denied`。
+  - **失败文案误导**：未纳管 SSH 时旧消息写「请在数据库服务器上纳管 SSH 主机」，而同机场景本机客户端才是正解。现在数据库地址即平台本机（或 SSH 目标即本机）时**直接走本机**，失败只报本机真实原因。
+  - **空原因消息兜底**：异常统一用 `str(e) or type(e).__name__`，杜绝「失败: 」后面一片空白；枚举库失败时透出真实的连接/认证 stderr。
+- **Oracle 11g 端到端真实测试通过**（192.168.220.168，实例 orcl11g）：逻辑备份 expdp、物理备份 RMAN（294MB 备份片）、恢复（impdp 真实导入，数据状态真实回退）、实时（LogMiner 真实捕获 redo/undo SQL）、恢复校验（RMAN VALIDATE + 真实抽取数据文件 / impdp SQLFILE）五类全通过，报告见 `docs/oracle_11g_e2e_report_20260917.md`。配套修复：11g 不能用 oracledb thin（DPY-3010）改走 JDBC 兜底、SSH 握手抖动重试（"Error reading SSH protocol banner" 不再直接判失败）、`rt_supervisor` 陈旧锁只判心跳不判进程存活导致守护静默不启动。
+- **实时保护链路去仿真**：CDC 因"能力不足 / 客户端缺失"（如金仓缺 `sys_receivewal`、达梦缺 dmPython）**不再静默降级为仿真日志流**——仿真恢复点不能作为 RPO/RTO 依据，现默认置 FAILED 并写 error 日志（开关 `RT_ALLOW_SIMULATED_FALLBACK`，默认 false）。仅 `DEMO_MODE=on` / `demo_only` / `rt_mode=sample` 三种**用户显式要求**的演示场景仍允许仿真。
+- **对象存储密钥解密**：`storage_targets.secret_key` 落库为密文（`enc:`），此前直连 MinIO/S3 未解密导致 `AccessDenied`；统一在存储后端工厂入口解密，覆盖生命周期、分层复制与手工复制等全部调用方。
+- **文档同步**：`feature_manifest` §3.2 / §9、`offline_ops_manual` §5.3、`product_design_spec` 按真实状态更新（含远程通道大实例产物仍会进内存的已知边界）。
+- **回归**：`test_backup_restore_all` 18 failed（既有基线，与改动前一致）、`test_rt_journal` 48 passed，零回归。
 
 ### v1.4.9（2026-09-16）
 

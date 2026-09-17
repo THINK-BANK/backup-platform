@@ -149,8 +149,38 @@ class RtSupervisor:
                 return True
         return False
 
+    @staticmethod
+    def _lock_owner_alive(path: str) -> bool:
+        """判断锁文件记录的持有者进程是否仍存活；无法判定（读不到 PID）时保守返回 True。"""
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                pid = int((fh.readline() or "").strip())
+        except (OSError, ValueError):
+            return True
+        if pid <= 0:
+            return True
+        # Linux 优先用 /proc 判定，避免 os.kill 对其它用户进程的权限限制
+        if os.path.exists(f"/proc/{pid}"):
+            return True
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return True
+        return True
+
     def _clear_stale_lock(self, path: str) -> bool:
-        """清理陈旧锁（心跳超过 ``RT_LOCK_STALE_SEC`` 未刷新）。
+        """清理陈旧锁。
+
+        两种情形都视为陈旧：
+        1. 心跳超过 ``RT_LOCK_STALE_SEC`` 未刷新；
+        2. 心跳虽新，但锁文件记录的持有者进程已不存在（进程被 SIGKILL / OOM /
+           断电强杀，锁文件来不及清理）。
+
+        第 2 条是必须校验的：2026-09-17 在 192.168.220.168 实测，平台被 pkill
+        重启后新进程读到刚被刷新的心跳，误判"已有活跃守护"而拒绝启动，导致
+        实时保护静默停止 3 小时（日志仅一行 INFO，UI 上看不出来）。
 
         Returns:
             True 表示确实清掉了一个陈旧锁，调用方可以重试抢占。
@@ -159,8 +189,12 @@ class RtSupervisor:
             age = time.time() - os.path.getmtime(path)
         except OSError:
             return False
-        if age < max(10, int(config.RT_LOCK_STALE_SEC)):
+        owner_alive = self._lock_owner_alive(path)
+        if age < max(10, int(config.RT_LOCK_STALE_SEC)) and owner_alive:
             return False
+        if owner_alive is False:
+            self.logger.warning(
+                "[rt.supervisor] 锁持有进程已退出但锁文件残留，判定为陈旧锁（%.0fs 前刷新）", age)
         try:
             os.unlink(path)
         except OSError:

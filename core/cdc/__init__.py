@@ -133,23 +133,52 @@ def create_daemon(task: dict, rt_config, repo, logger=None) -> CDCDaemon:
     engine = (task.get("db_type") or "").lower()
     task_id = task.get("id")
 
-    def _simulated(reason: str) -> CDCDaemon:
+    def _simulated(reason: str, explicit: bool = False) -> CDCDaemon:
+        """构造仿真守护进程。
+
+        ``explicit=True``：用户**显式**要求的演示/演练场景（DEMO_MODE=on、
+        demo_only、rt_mode=sample），始终允许仿真。
+
+        ``explicit=False``：能力不足导致的**静默降级**（引擎未注册、实现 import
+        失败、客户端缺失）。这类降级默认被 ``RT_ALLOW_SIMULATED_FALLBACK``
+        禁止——此时返回的守护进程 ``start()`` 恒失败，由 ``db_rt`` 置 FAILED
+        并记 error 日志，**绝不产出假日志段**。
+
+        背景：2026-09-17 实测，金仓/达梦任务因「缺少流复制客户端」在构造阶段
+        就被换成仿真流，`db_rt` 拿到的 `start()` 是成功的，其「启动失败不降级」
+        的硬化分支根本不会被触发，于是持续产出 `.simlog`。
+        """
         daemon = SimulatedCDCDaemon(task, rt_config, repo, logger=logger)
         if reason:
             daemon.degrade_reason = reason
+        if not explicit and not getattr(config, "RT_ALLOW_SIMULATED_FALLBACK", False):
+            def _blocked_start() -> bool:
+                daemon.last_error = (
+                    f"{reason}；按配置不降级仿真，实时保护已停止")
+                return False
+
+            daemon.start = _blocked_start
+            try:
+                daemon.display_name = f"{engine or '未知'} 日志流（不可用·不降级仿真）"
+            except Exception:
+                pass
+            logger.error("[rt.cdc] task=%s 真实日志流不可用，且不降级仿真: %s",
+                         task_id, reason)
+            return daemon
+        if reason:
             logger.info("[rt.cdc] task=%s 使用仿真日志流: %s", task_id, reason)
         return daemon
 
     # 1) 演示模式：强制仿真，绝不连真实库
     if config.DEMO_MODE == "on":
-        return _simulated("DEMO_MODE=on，使用仿真日志流")
+        return _simulated("DEMO_MODE=on，使用仿真日志流", explicit=True)
     if task.get("demo_only"):
-        return _simulated("任务标记为演示（demo_only）")
+        return _simulated("任务标记为演示（demo_only）", explicit=True)
 
     # 2) 显式配置 rt_mode=sample 时直接仿真（用于压测 / 演练）
     mode = (getattr(rt_config, "mode", "") or "auto").strip().lower()
     if mode == "sample":
-        return _simulated("rt_mode=sample，按配置使用仿真日志流")
+        return _simulated("rt_mode=sample，按配置使用仿真日志流", explicit=True)
 
     # 3) 按引擎选择真实实现
     daemon_cls = ENGINE_DAEMON_MAP.get(engine)

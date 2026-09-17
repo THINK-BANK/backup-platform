@@ -42,6 +42,7 @@ Oracle LogMiner 日志捕获守护（T06）。
 from __future__ import annotations
 
 import importlib
+import re
 from typing import Any, List, Tuple
 
 from .polling_base import PollingLogMinerDaemon
@@ -96,6 +97,96 @@ def probe_oracle_driver() -> dict:
         "hint": ("" if module is not None
                  else "pip install oracledb 可启用 Oracle LogMiner 真实日志捕获"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Oracle 11g 兜底：JDBC 通道
+# ---------------------------------------------------------------------------
+# python-oracledb thin 模式仅支持 12.1+ 服务端，连 11.2 直接抛 DPY-3010（外层
+# 包成 DPY-6005「无法连接数据库」）。这类错误必须识别出来改走 JDBC，绝不能当成
+# 「连不上」而静默降级成仿真。
+_THIN_UNSUPPORTED_CODES = ("DPY-3010", "DPY-3015")
+
+# 命名绑定参数（:from_scn / :logfile …），仅替换确实存在于参数字典里的名字，
+# 避免误伤字符串字面量中的冒号（如 '2026-01-01 10:00:00'）
+_NAMED_PARAM_RE = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _is_thin_unsupported(exc: BaseException) -> bool:
+    """判断异常是否「thin 模式不支持该服务端版本」（11g 的典型表现）。"""
+    seen, node = 0, exc
+    while node is not None and seen < 5:
+        text = f"{node} {getattr(node, 'args', '')}"
+        if any(code in text for code in _THIN_UNSUPPORTED_CODES):
+            return True
+        if "thin" in text.lower() and ("11." in text or "11g" in text.lower()):
+            return True
+        node = node.__cause__ or node.__context__
+        seen += 1
+    return False
+
+
+def _is_missing_logfile(exc: BaseException) -> bool:
+    """是否 ORA-01291（LogMiner 缺少承载起点 SCN 的日志文件）。"""
+    return "ORA-01291" in f"{exc} {getattr(exc, 'args', '')}"
+
+
+class _JdbcCursorAdapter:
+    """把 jaydebeapi 游标（qmark 占位符）适配成本模块使用的命名绑定写法。"""
+
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def execute(self, sql: str, params=None):
+        if isinstance(params, dict) and params:
+            names: List[str] = []
+
+            def _repl(match):
+                name = match.group(1)
+                if name not in params:
+                    return match.group(0)
+                names.append(name)
+                return "?"
+
+            sql = _NAMED_PARAM_RE.sub(_repl, sql)
+            return self._cursor.execute(sql, [params[n] for n in names])
+        if params:
+            return self._cursor.execute(sql, list(params))
+        return self._cursor.execute(sql)
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def close(self):
+        try:
+            self._cursor.close()
+        except Exception:
+            pass
+
+
+class _JdbcConnectionAdapter:
+    """jaydebeapi 连接的轻量适配器：只暴露本模块用到的 ``cursor``/``close``。"""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def cursor(self):
+        return _JdbcCursorAdapter(self._conn.cursor())
+
+    def close(self):
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def commit(self):
+        try:
+            self._conn.commit()
+        except Exception:
+            pass
 
 
 class OracleLogMinerDaemon(PollingLogMinerDaemon):
@@ -160,6 +251,7 @@ class OracleLogMinerDaemon(PollingLogMinerDaemon):
             self.task.get("service_name") or self.task.get("db_name")
             or self.DEFAULT_SERVICE)
         self._supplemental_warned: bool = False
+        self._jdbc_mode: bool = False      # True = 走 JDBC 兜底（Oracle 11g）
 
     # ------------------------------------------------------------------
     # 驱动与连接
@@ -174,12 +266,52 @@ class OracleLogMinerDaemon(PollingLogMinerDaemon):
         return f"{self.host}:{self.port or self.DEFAULT_PORT}/{self.service_name}"
 
     def _connect(self):
-        """建立 Oracle 连接（oracledb thin 模式无需 Instant Client）。"""
+        """建立 Oracle 连接。
+
+        优先 oracledb / cx_Oracle；**Oracle 11g 例外**——python-oracledb 的 thin
+        模式只支持 12.1 及以上服务端，连 11.2 会抛 ``DPY-3010``（外层表现为
+        ``DPY-6005``）。此时自动切换到平台自带的 JDBC 通道（离线交付包内置 ojdbc
+        jar + JRE），保证 11g 环境同样**真实捕获**，而不是静默降级仿真。
+        """
         module, reason = self._import_driver()
-        if module is None:
-            raise RuntimeError(reason)
-        return module.connect(user=self.username, password=self.password,
-                              dsn=self._dsn())
+        if module is not None:
+            try:
+                return module.connect(user=self.username, password=self.password,
+                                      dsn=self._dsn())
+            except Exception as exc:
+                if not _is_thin_unsupported(exc):
+                    raise
+                self.logger.warning(
+                    "[rt.cdc] task=%s oracledb thin 模式不支持当前服务端版本"
+                    "（%s），改用 JDBC 通道连接", self.task_id, exc)
+        conn = self._connect_jdbc()
+        if conn is None:
+            raise RuntimeError(
+                "Oracle 连接失败：oracledb thin 模式不支持该服务端版本"
+                "（Oracle 11g 及以下），且 JDBC 兜底通道不可用"
+                "（需要 drivers/jdbc/ojdbc*.jar 与 JRE）")
+        return conn
+
+    def _connect_jdbc(self):
+        """用 core.jdbc（ojdbc + JRE）建连，返回 DB-API 适配器。失败返回 None。"""
+        try:
+            from core import jdbc
+        except Exception as exc:
+            self.logger.debug("[rt.cdc] task=%s JDBC 通道不可用: %s",
+                              self.task_id, exc)
+            return None
+        try:
+            raw = jdbc.connect("oracle", self.host, self.port or self.DEFAULT_PORT,
+                               self.service_name, self.username, self.password,
+                               timeout=15)
+        except Exception as exc:
+            self.logger.warning("[rt.cdc] task=%s JDBC 连接失败: %s",
+                                self.task_id, exc)
+            return None
+        if raw is None:
+            return None
+        self._jdbc_mode = True
+        return _JdbcConnectionAdapter(raw)
 
     # ------------------------------------------------------------------
     # 源端预检
@@ -266,7 +398,21 @@ class OracleLogMinerDaemon(PollingLogMinerDaemon):
 
         rows: List[dict] = []
         try:
-            self._start_logmnr(conn, from_scn, to_scn)
+            try:
+                self._start_logmnr(conn, from_scn, to_scn)
+            except Exception as exc:
+                # ORA-01291：起点 SCN 早于现存最早的归档（更早的归档已被清理），
+                # LogMiner 找不到承载该起点的日志。这类数据已不可得，抬升起点后
+                # 重试一次，避免守护永久卡死在同一个区间上。
+                earliest = getattr(self, "_min_first_scn", 0) or 0
+                if not (_is_missing_logfile(exc) and earliest and from_scn < earliest):
+                    raise
+                self.logger.warning(
+                    "[rt.cdc] task=%s 起点 SCN %s 早于现存最早归档 %s"
+                    "（更早归档已被清理，该段变更不可恢复），本轮从 %s 开始捕获",
+                    self.task_id, from_scn, earliest, earliest)
+                from_scn = earliest
+                self._start_logmnr(conn, from_scn, to_scn)
             rows = self._read_contents(conn, from_scn, to_scn)
         finally:
             # 拍板 Q7：无论成功失败都必须释放 LogMiner 上下文
@@ -280,12 +426,19 @@ class OracleLogMinerDaemon(PollingLogMinerDaemon):
             成功挂载的文件数。
         """
         paths: List[str] = []
+        self._min_first_scn = 0
         try:
             for row in self._query(conn, self.SQL_ARCHIVED_LOGS,
                                    {"from_scn": from_scn, "to_scn": to_scn}):
                 name = str(row[0] or "").strip()
                 if name and name not in paths:
                     paths.append(name)
+                try:
+                    first = int(row[2])
+                except (TypeError, ValueError, IndexError):
+                    first = 0
+                if first and (not self._min_first_scn or first < self._min_first_scn):
+                    self._min_first_scn = first
         except Exception as exc:
             self.logger.warning("[rt.cdc] task=%s 查询归档日志失败: %s",
                                 self.task_id, exc)

@@ -135,6 +135,10 @@ setsid nohup bash start.sh > /tmp/aidbm.log 2>&1 < /dev/null &
 | 物理备份找不到 xtrabackup | 平台侧缺对应版本二进制 | 配 `XTRABACKUP_8_PATH`（8.0+）/ `XTRABACKUP_24_PATH`（5.5–5.7）/ `MARIABACKUP_PATH`；**绝不在数据库服务器装** |
 | `--databases` 产物恢复到别的库却写回源库名 | 产物自带 `CREATE DATABASE/USE` | 平台已自动剥离；自研脚本需注意 |
 | 目标机没有 `mysql` 命令 | PATH 里没有（源码装在 `/opt/mysql*/bin`） | 任务高级选项 `tool_path` 填 bin 目录（冒号/分号分隔） |
+| 备份失败但**看不到原因**（消息是「…失败: 」后面空白） | `MemoryError` 等异常的 `str()` 为空，旧代码直接 `f"{e}"` | 已修（2026-09-17）：异常消息退化为类型名（如 `MemoryError`）；若真见到 `MemoryError`，按下一行处置 |
+| **大库 / 全实例备份跑到一半失败、平台内存飙升** | 本机通道曾把整个 mysqldump 产物读进内存后才写盘 | 已修：改为 stdout 直连文件**流式**落盘（122MB 产物实测平台 RSS 仅 +22MB）。**平台与数据库同机时尤其容易触发**（内存被 DB 占用），建议给平台预留 ≥2GB |
+| 密码填错却"备份成功"，实际备份的是别的实例 | 平台机 `/root/.my.cnf` 的凭据**优先级高于**任务里配置的（覆盖了 `MYSQL_PWD`） | 已修：全实例的枚举 / mysqldump / 恢复灌入均加 `--no-defaults`。客户自定义脚本若自行调用 mysql 客户端，务必同样处理 |
+| 任务没纳管 SSH，失败却提示"请纳管 SSH 主机" | 旧文案把「本机通道」也当成需要 SSH | 已修：数据库就在平台本机时直接走本机执行，失败消息只报本机真实原因（如 `ERROR 1045 Access denied for user ...`） |
 
 ### 5.4 PostgreSQL / 金仓
 
@@ -148,9 +152,9 @@ setsid nohup bash start.sh > /tmp/aidbm.log 2>&1 < /dev/null &
 
 ### 5.5 Oracle
 
-> 上线必读：Oracle 的备份/恢复链路**没有端到端验证报告**（唯一专项报告 `docs/oracle_backup_test_report_2026-08-12.md` 结论 Partial，19c 连通性 Pass 但备份执行因缺少客户端未跑通）。
-> 因此本节条目是**既往实战经验**，不是当前版本的验收结论——首次对接客户 Oracle 环境时，必须按 §4 完整跑一遍闭环，并把结果与本节的差异补充回来。
-> 好消息是：当时的"仿真占位成功"假成功路径已硬化为失败（见功能清单 §3.7.5），现在缺客户端会**明确报错**而不是假装成功。
+> 验证现状（2026-09-17 更新）：**Oracle 11g 已有端到端验证报告** `docs/oracle_11g_e2e_report_20260917.md`（192.168.220.168，逻辑备份/物理备份/恢复/实时 LogMiner/恢复校验五类全通过）。
+> **19c 与 Oracle PITR 仍无端到端报告**——首次对接客户 19c 环境时，必须按 §4 完整跑一遍闭环并补报告。
+> 另：历史遗留的"仿真占位成功"假成功路径已硬化为失败（见功能清单 §3.7.5），现在缺客户端会**明确报错**而不是假装成功；CDC 仿真降级通道也已默认关闭（见功能清单 §3.7）。
 
 常见报错 `缺少必要客户端/连接，无法执行真实备份`：说明平台侧/远端找不到 `expdp` 或 `rman`。
 处置顺序（均不改代码）：① 任务高级选项 `tool_path` 填 Oracle 的 `bin` 目录；② 确认远端预检用 `oracle` 用户探测（服务端工具常只在 oracle 用户 profile 可见）；③ 用 `resolve_remote_tool` 的目录枚举思路确认实际路径（`/u01/app/oracle/product/*/*/bin`）。
@@ -162,6 +166,10 @@ setsid nohup bash start.sh > /tmp/aidbm.log 2>&1 < /dev/null &
 | ORA-39145（目录对象为空） | expdp 必须显式指定 `DIRECTORY` |
 | 预检查报客户端工具缺失 | 服务端工具只在 oracle 用户 profile 可见，工具探测要用 oracle 用户（平台已按此实现） |
 | impdp 报 ORA-31684 / ORA-39082 | 非致命（对象已存在等），数据已导入应按成功判定（平台已容错） |
+| 11g 实时捕获连不上（DPY-3010 / DPY-6005） | `oracledb` 瘦客户端只支持 12.1+，**11g 必须走 JDBC 兜底**：确认 `drivers/` 下 ojdbc jar 与 JRE 已随镜像/离线包带上；平台已自动识别 DPY-3010 并切换，切不了会**诚实失败**（不再降级仿真） |
+| LogMiner 段里出现 `OBJ# xxxxx`（owner/table 为 UNKNOWN） | 在线字典无法解析已删除/事后删除的对象名，属已知限制；按 SCN 区间与 OBJ# 过滤，不要依赖表名 |
+| SSH 偶发 `Error reading SSH protocol banner` | 瞬时握手抖动（sshd 未就绪/MaxStartups 限流/链路丢包），平台已在连接层退避重试 2 次；仍失败再查 sshd 状态与并发连接数 |
+| 备份后 `/u01/app/oracle/backup` 有残留脚本 | 正常情况应为空（成功后平台清理 `expdp_*.sh` / `rman_t*.cmd`）；**失败时故意保留**作排障证据，可手工删除 |
 
 ### 5.6 SQL Server
 

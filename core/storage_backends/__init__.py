@@ -52,6 +52,18 @@ def get_backend(storage_type: str, config: dict, logger: logging.Logger = None) 
     cls = BACKEND_REGISTRY.get(storage_type.lower())
     if not cls:
         raise ValueError(f"不支持的存储类型: {storage_type}（支持: {', '.join(BACKEND_REGISTRY)}）")
+    # storage_targets.secret_key 落库时经 db.encrypt_secret 加密（前缀 enc:），
+    # 后端（MinIO/S3）必须拿到明文才能签名，否则服务端返回 AccessDenied。
+    # 这里统一在工厂入口解密：一次覆盖所有后端与所有调用方（lifecycle/tier_replication/手工复制等）。
+    # 注意必须复制一份配置，避免把明文写回调用方手里的数据库行对象。
+    config = dict(config) if config else {}
+    sk = config.get("secret_key") or ""
+    if isinstance(sk, str) and sk.startswith("enc:"):
+        try:
+            from core import db as _db
+            config["secret_key"] = _db.decrypt_secret(sk)
+        except Exception:  # 解密失败不应阻断创建，交由后端连接时报错
+            pass
     return cls(config, logger)
 
 

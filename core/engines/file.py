@@ -201,11 +201,34 @@ def _get_ssh_client(host_key: str, password: str = None):
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        hostname, port=port, username=user,
-        password=password, timeout=60,
-        allow_agent=False, look_for_keys=False,
-    )
+    # 握手抖动重试：sshd 刚启动尚未就绪 / MaxStartups 瞬时限流 / 中间链路丢包，
+    # 都会表现为 "Error reading SSH protocol banner"（EOFError 或 SSHException），
+    # 属瞬时故障——192.168.220.168 环境 Oracle 11g 实测出现过，直接导致一次
+    # 恢复校验被判失败（重跑即通过）。这里短暂退避后重试，避免把抖动暴露成
+    # 任务失败。认证失败（AuthenticationException）不是瞬时故障，直接抛出不重试。
+    _auth_exc = paramiko.ssh_exception.AuthenticationException
+    _ssh_exc = paramiko.ssh_exception.SSHException
+    last_exc = None
+    for _attempt in (1, 2, 3):
+        try:
+            client.connect(
+                hostname, port=port, username=user,
+                password=password, timeout=60,
+                allow_agent=False, look_for_keys=False,
+            )
+            last_exc = None
+            break
+        except _auth_exc:
+            raise
+        except (_ssh_exc, OSError, EOFError) as _exc:
+            last_exc = _exc
+            try:
+                client.close()
+            except Exception:
+                pass
+            time.sleep(1.5 * _attempt)
+    if last_exc is not None:
+        raise last_exc
     # 启用 TCP keepalive + SSH keepalive，降低中间 NAT/防火墙静默断连概率
     try:
         t = client.get_transport()

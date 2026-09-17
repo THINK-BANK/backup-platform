@@ -304,7 +304,7 @@ class PostgreSQLEngine(BackupEngine):
             return BackupResult(
                 success=False, status=BackupStatus.FAILED,
                 backup_path=None, simulated=False,
-                message=f"PostgreSQL 全实例备份失败: {e}")
+                message=f"PostgreSQL 全实例备份失败: {str(e) or type(e).__name__}")
         size, checksum = self._compute_size_checksum(out_path)
         dbs_txt = ", ".join(manifest.get("databases") or [])
         msg = (f"PostgreSQL 全实例备份成功: {len(manifest['databases'])} 个库"

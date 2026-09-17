@@ -331,7 +331,11 @@ def api_test_target(target_id):
 
     config = dict(row)
     body = request.get_json(silent=True) or {}
-    if body.get("secret_key") and not config.get("secret_key"):
+    # 库里的 secret_key 是密文（enc:），测试连接前必须解密，否则对象存储返回 AccessDenied；
+    # 若页面重新粘贴了明文 Secret，则以页面输入为准（原逻辑要求库里为空才生效，导致改了 Secret 也测不通）
+    if config.get("secret_key"):
+        config["secret_key"] = db.decrypt_secret(config.get("secret_key") or "")
+    if body.get("secret_key"):
         config["secret_key"] = body["secret_key"]
 
     try:

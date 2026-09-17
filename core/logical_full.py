@@ -113,14 +113,16 @@ def _which_any(*names: str) -> str:
 
 def enumerate_databases(db_type: str, query_tool: str, host: str, port,
                         user: str, env: dict, include_system_dbs: bool = False):
-    """枚举库清单，默认过滤系统库。返回 (命中的维护库, 库名列表)。
+    """枚举库清单，默认过滤系统库。返回 (命中的维护库, 库名列表, 最近错误)。
 
     PG 系用 SQL 目录表查询（需先连到某个维护库）；MySQL 系 SHOW DATABASES
-    无需维护库。全部候选失败返回 ("", [])。
+    无需维护库。全部候选失败返回 ("", [], 最后一条 stderr)——把 stderr 带回去，
+    是为了让"连不上/认证失败"这类真实原因能出现在用户看到的失败消息里。
     """
     cfg = TOOLING[db_type]
     is_pg = db_type in PG_FAMILY
     sys_set = set() if include_system_dbs else set(SYSTEM_DBS.get(db_type) or ())
+    last_err = ""
     for mdb in cfg["maint_candidates"]:
         for catalog_sql in cfg["catalog_sqls"]:
             if is_pg:
@@ -128,25 +130,37 @@ def enumerate_databases(db_type: str, query_tool: str, host: str, port,
                        "-d", mdb, "-t", "-A", "-c", catalog_sql]
             else:
                 # 注意 MySQL 客户端 -P(大写)=端口、-p(小写)=密码
-                cmd = [query_tool, "-h", str(host), "-P", str(port), "-u", user,
-                       "-N", "-B", "-e", catalog_sql]
-            rc, out, _err = _run(cmd, env)
+                # --no-defaults 必须在首位：否则平台机的 /root/.my.cnf 会**覆盖**
+                # 任务里配置的用户与密码（MYSQL_PWD 环境变量优先级低于配置文件），
+                # 表现为密码填错也能"备份成功"，实际连的是 my.cnf 里的实例/账号。
+                cmd = [query_tool, "--no-defaults", "-h", str(host), "-P", str(port),
+                       "-u", user, "-N", "-B", "-e", catalog_sql]
+            rc, out, err = _run(cmd, env)
             if rc == 0 and out.strip():
                 dbs = [ln.strip().split("\t")[0] for ln in out.splitlines() if ln.strip()]
                 dbs = [d for d in dbs if d and d not in sys_set]
-                return mdb, dbs
-    return "", []
+                return mdb, dbs, ""
+            if not last_err and err and err.strip():
+                last_err = err.strip()
+    return "", [], last_err
 
 
 def _mysqldump_to_file(cmd: list, env: dict, fpath: str):
-    """mysqldump 输出落盘（stdout → 文件，二进制保真）。"""
-    p = subprocess.run(cmd, capture_output=True, timeout=7200, env=env)
-    if p.returncode == 0:
-        with open(fpath, "wb") as f:
-            f.write(p.stdout)
-    return (p.returncode,
-            p.stdout.decode("utf-8", "replace")[:200],
-            p.stderr.decode("utf-8", "replace")[:300])
+    """mysqldump 输出**流式**落盘（stdout 直连文件，二进制保真）。
+
+    绝不能把产物读进内存：全实例/大库的 dump 动辄数 GB，而平台常与数据库
+    部署在同一台机器上（内存被 DB 占用），一旦用 ``capture_output=True`` 整体
+    缓存，Python 会抛 ``MemoryError``——它恰好 **``str()`` 为空字符串**，最终
+    上报成「MySQL 全实例备份失败: 」这种看不到任何原因的消息。用户侧表现就是
+    「明明备份跑了 5 分多钟，最后突然失败」，极难排查。
+
+    改为 stdout 直连文件后，本机备份内存占用恒定为管道缓冲区大小（与产物大小无关）。
+    """
+    with open(fpath, "wb") as f:
+        p = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE,
+                           timeout=7200, env=env)
+    err = (p.stderr or b"").decode("utf-8", "replace")[:300]
+    return p.returncode, "", err
 
 
 def backup_full_instance(db_type: str, *, host, port, user, password,
@@ -164,16 +178,22 @@ def backup_full_instance(db_type: str, *, host, port, user, password,
     if is_pg:
         dumpall_tool = dumpall_tool or _which_any(cfg["default_dumpall"])
 
-    maint, dbs = enumerate_databases(
+    maint, dbs, enum_err = enumerate_databases(
         db_type, query_tool, host, port, user, env, include_system_dbs)
     if not is_pg:
         # mysqldump 无法导出虚拟库（--all-databases 同样跳过），勾选包含也排除
         dbs = [d for d in dbs
                if d not in ("information_schema", "performance_schema")]
     if not dbs:
-        hint = ("排除系统库后没有可备份的库，可勾选「包含系统库」"
-                if not include_system_dbs else
-                f"候选维护库: {', '.join(cfg['maint_candidates'])}，请检查连接信息")
+        if enum_err:
+            # 连不上/认证失败才是真原因，比"没有可备份的库"有用得多
+            hint = (f"连接或认证失败: {enum_err[:200]}。"
+                    f"请核对任务里配置的地址、端口、用户与密码")
+        elif not include_system_dbs:
+            hint = "排除系统库后没有可备份的库，可勾选「包含系统库」"
+        else:
+            hint = (f"候选维护库: {', '.join(cfg['maint_candidates'])}，"
+                    f"请检查连接信息")
         raise RuntimeError(f"无法在 {host}:{port} 枚举到可备份的数据库——{hint}")
 
     work = tempfile.mkdtemp(prefix="bp_fullinst_")
@@ -188,9 +208,10 @@ def backup_full_instance(db_type: str, *, host, port, user, password,
                 ], env, timeout=7200)
             else:
                 # MySQL 系：逐库 .sql（--databases 保证含 CREATE DATABASE/USE）
-                cmd = [dump_tool, "-h", str(host), "-P", str(port), "-u", user,
-                       "--single-transaction", "--routines", "--triggers",
-                       "--events", "--default-character-set=utf8mb4",
+                # --no-defaults 见 enumerate_databases 处说明：必须用任务配置的凭据
+                cmd = [dump_tool, "--no-defaults", "-h", str(host), "-P", str(port),
+                       "-u", user, "--single-transaction", "--routines",
+                       "--triggers", "--events", "--default-character-set=utf8mb4",
                        "--databases", d]
                 rc, _o, err = _mysqldump_to_file(
                     cmd, env, os.path.join(dbs_dir, f"{d}.sql"))
@@ -262,7 +283,7 @@ def restore_full_instance(db_type: str, *, host, port, user, password,
         dbs = manifest.get("databases") or []
 
         # 恢复端枚举不做系统库过滤（include_system_dbs 备份可能含系统库）
-        maint, existing = enumerate_databases(
+        maint, existing, _enum_err = enumerate_databases(
             db_type, query_tool, host, port, user, env, include_system_dbs=True)
 
         globals_ok = False
@@ -301,7 +322,8 @@ def restore_full_instance(db_type: str, *, host, port, user, password,
                 if not os.path.exists(src):
                     src = os.path.join(work, "dbs", f"{d}.dump")
                 rc, _o, err = _run([
-                    query_tool, "-h", str(host), "-P", str(port), "-u", user,
+                    query_tool, "--no-defaults", "-h", str(host), "-P", str(port),
+                    "-u", user,
                 ], env, timeout=7200, stdin_file=src)
             if rc != 0:
                 raise RuntimeError(f"库 {d} 恢复失败(rc={rc}): {err[:300]}")

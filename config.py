@@ -211,6 +211,12 @@ RT_RPO_ALERT_MIN_SEC = int(os.environ.get("RT_RPO_ALERT_MIN_SEC", "300"))
 RT_DB_FLUSH_LOGS = os.environ.get("RT_DB_FLUSH_LOGS", "true").lower() == "true"
 # PG 是否创建物理复制槽（A6：默认开启，保证不丢 WAL，但源库有堆积风险）
 RT_PG_CREATE_SLOT = os.environ.get("RT_PG_CREATE_SLOT", "true").lower() == "true"
+# 真实日志捕获启动失败时，是否允许降级为仿真日志流。
+# 默认 **关闭**：实时保护链路上绝不产出仿真数据（仿真恢复点不能作为 RPO/RTO 依据）。
+# 仅当任务显式标记 demo_only、DEMO_MODE=on 或 rt_mode=sample 时才允许仿真；
+# 需要演练/演示场景时设置 RT_ALLOW_SIMULATED_FALLBACK=true 显式开启。
+RT_ALLOW_SIMULATED_FALLBACK = (
+    os.environ.get("RT_ALLOW_SIMULATED_FALLBACK", "false").lower() == "true")
 
 # 上云聚合（缓解对象存储写放大）
 RT_UPLOAD_BATCH_MB = int(os.environ.get("RT_UPLOAD_BATCH_MB", "64"))

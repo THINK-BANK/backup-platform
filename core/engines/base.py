@@ -17,6 +17,7 @@ import json
 import time
 import shutil
 import shlex
+import socket
 import subprocess
 import functools
 from dataclasses import dataclass
@@ -91,6 +92,47 @@ def _is_network_error(exc: Exception) -> bool:
         "broken pipe", "no route to host", "eof", "ssh", "sftp", "socket"
     )
     return any(k in msg for k in network_keywords)
+
+
+def _err_text(exc: BaseException) -> str:
+    """异常文本；``str()`` 为空的异常（``MemoryError`` 等）退化为类型名。
+
+    否则会产出「MySQL 全实例备份失败: 」这种看不到任何原因的消息——用户
+    2026-09-17 实测遇到，排查成本极高。
+    """
+    return str(exc).strip() or type(exc).__name__
+
+
+@functools.lru_cache(maxsize=1)
+def _local_identifiers() -> frozenset:
+    """本机主机名与全部网卡 IP（进程内缓存）。
+
+    不用 DNS：离线环境下解析主机名会挂起或失败，这里只读本机信息。
+    """
+    ids = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    try:
+        ids.add(socket.gethostname().lower())
+        ids.add(socket.getfqdn().lower())
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                             capture_output=True, text=True, timeout=5).stdout
+        for line in (out or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[2] == "inet":
+                ids.add(parts[3].split("/")[0])
+    except Exception:
+        pass
+    return frozenset(x for x in ids if x)
+
+
+def _is_platform_self(host) -> bool:
+    """判断 SSH 目标 / 数据库地址是否就是备份平台本机。"""
+    h = str(host or "").strip().lower()
+    if not h:
+        return False
+    return h in _local_identifiers()
 
 
 def _with_network_retry(retries=None, delay=None, backoff=2.0):
@@ -880,8 +922,17 @@ class BackupEngine:
         from core import remote_dump
         ssh_host = remote_dump.resolve_ssh_host(self.task)
         remote_error = None
+        remote_tried = False
+
+        # 数据库服务器就是备份平台本机时，直接本机执行——本机客户端才是正解：
+        # 未纳管 SSH 时本机是唯一通道；SSH 目标即本机时自己 SSH 自己只会多一层失败面。
+        if ssh_host and _is_platform_self(ssh_host.get("host")):
+            self.logger.info("[%s] %s: SSH 目标即备份平台本机，直接在本机执行",
+                             self.task_name, label)
+            ssh_host = None
 
         if ssh_host:
+            remote_tried = True
             hk = ssh_host.get("host_key", "unknown")
             self.logger.info("[%s] %s: 优先尝试远程主机 %s", self.task_name, label, hk)
             # 重试次数/间隔走任务级高级选项（默认 3 次 / 间隔 60s）；
@@ -903,7 +954,9 @@ class BackupEngine:
                     # 非网络错误直接结束重试
                     break
                 except Exception as e:
-                    remote_error = str(e)
+                    # 远程侧整体落盘尚未全类型接入，大实例仍可能 MemoryError，
+                    # 其 str() 为空，这里必须退化为类型名才看得出原因
+                    remote_error = _err_text(e)
                     if attempt < max_retries and _is_network_error(e):
                         # 固定间隔重试（任务级，默认 60s）。大库备份的断点会被保留，
                         # 重试时从已传输字节继续，不会像以前那样从头重跑。
@@ -916,21 +969,30 @@ class BackupEngine:
                     self.logger.warning("[%s] %s 远程执行失败: %s", self.task_name, label, remote_error)
                     break
         else:
-            remote_error = "未配置 SSH 备份机"
+            self.logger.info("[%s] %s: 未纳管 SSH 备份机，直接在本机执行",
+                             self.task_name, label)
 
-        self.logger.info("[%s] %s: 远程不可用，回退到本机执行", self.task_name, label)
+        if remote_tried:
+            self.logger.info("[%s] %s: 远程不可用，回退到本机执行", self.task_name, label)
         try:
             result = local_fn()
             if result and result.success:
                 return result
-            local_error = result.message if result else "本机执行未返回成功结果"
+            local_error = (result.message if result else "") or "本机执行未返回成功结果"
         except FileNotFoundError as e:
             local_error = f"命令不存在: {e}"
         except Exception as e:
-            local_error = str(e)
+            local_error = _err_text(e)
 
-        msg = f"{label} 失败。远程: {remote_error or '未尝试'}；本机: {local_error or '未尝试'}。" \
-              f"请在数据库服务器上纳管 SSH 主机，或在备份平台安装对应客户端。"
+        if remote_tried:
+            msg = (f"{label} 失败。远程: {remote_error or '未尝试'}；"
+                   f"本机: {local_error or '未尝试'}。"
+                   f"请在数据库服务器上纳管 SSH 主机，或在备份平台安装对应客户端。")
+        else:
+            # 本机是唯一通道，此时提示"去纳管 SSH"是误导：同机场景本机客户端才是正解
+            msg = (f"{label} 失败，本机执行未成功: {local_error or '原因未知'}。"
+                   f"该任务未纳管 SSH 备份机；请先确认备份平台已安装对应数据库客户端工具"
+                   f"（如 mysqldump/pg_dump/expdp），确需在数据库服务器上执行时再纳管 SSH 主机。")
         return BackupResult(success=False, status=BackupStatus.FAILED, message=msg)
 
     # ---------------- 子类需实现 ----------------

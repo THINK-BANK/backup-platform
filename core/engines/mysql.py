@@ -834,7 +834,7 @@ class MySQLEngine(BackupEngine):
             return BackupResult(
                 success=False, status=BackupStatus.FAILED,
                 backup_path=None, simulated=False,
-                message=f"{self.display_name} 全实例备份失败: {e}")
+                message=f"{self.display_name} 全实例备份失败: {str(e) or type(e).__name__}")
         size = os.path.getsize(out_path)
         checksum = db.sha256_file(out_path)
         dbs_txt = ", ".join(manifest.get("databases") or [])

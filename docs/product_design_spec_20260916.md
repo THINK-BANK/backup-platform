@@ -378,7 +378,9 @@ APScheduler job(task_<id>) → _job_wrapper → run_task_now
 ### 8.3 兼容性
 
 - 数据库版本（**已真实端到端测试**）：MySQL 5.7/8.0、MariaDB 10.x、PostgreSQL 12~15、SQL Server 2019、金仓 V8/V9、达梦 DM8；
-- **Oracle 11g/19c 为唯一例外**：现有凭证只有 19c 连通性实测（`docs/oracle_backup_test_report_2026-08-12.md`）与类型映射冒烟（Oracle 作为同步源之一），**备份/恢复/RMAN/归档实时链路尚无端到端验证报告**——代码已按 11g/19c 差异写了兼容分支（PDB 自动 OPEN、DATA_PUMP_DIR 按 service 连接查询、impdp 非致命错误容错），但这些分支未经真实环境闭环验证，不得作为已验证能力对外承诺（见 `docs/feature_manifest_20260917.md` §3.2 与 §9）。
+- **Oracle 11g 已真实端到端测试**（2026-09-17，192.168.220.168）：逻辑备份 expdp、物理备份 RMAN、恢复（impdp 真实导入，数据状态真实回退）、实时备份（LogMiner 真实捕获，含 redo/undo SQL）、恢复校验（RMAN `RESTORE VALIDATE` + 真实抽取数据文件；impdp `SQLFILE` 解析 DDL）五类全部通过，报告见 `docs/oracle_11g_e2e_report_20260917.md`；
+- **Oracle 19c 仍为例外**：现有凭证只有 19c 连通性实测（`docs/oracle_backup_test_report_2026-08-12.md`）与类型映射冒烟，备份/恢复/RMAN/归档实时链路尚无端到端验证报告——代码已按 11g/19c 差异写了兼容分支（PDB 自动 OPEN、DATA_PUMP_DIR 按 service 连接查询、impdp 非致命错误容错），但 19c 分支未经真实环境闭环验证，不得作为已验证能力对外承诺；
+- **Oracle PITR 未验证**：当前实现仅生成恢复脚本、未真实执行，不得承诺时间点恢复能力（见 `docs/feature_manifest_20260917.md` §9）。
 - 客户端工具：动态发现 + `tool_path` 手动兜底，支持 Windows（cmd）与 Linux；
 - 平台运行时：Python 3.10+。
 

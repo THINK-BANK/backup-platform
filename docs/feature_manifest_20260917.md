@@ -72,11 +72,11 @@
 
 | 引擎 | 代码位置 | 通道 | 真实验证状态 |
 |---|---|---|---|
-| MySQL / MariaDB | `core/engines/mysql.py` `mariadb.py` | 逻辑备份（单库/多库/全实例逐库打包）、物理备份（xtrabackup 8.0.35 / 2.4.29、mariabackup，平台侧推送免安装）、binlog PITR | ✅ 5.7.44 / 8.0.40 / MariaDB 10.11.19 实跑 |
+| MySQL / MariaDB | `core/engines/mysql.py` `mariadb.py` | 逻辑备份（单库/多库/全实例逐库打包；**本机通道流式落盘，内存占用与产物大小无关**，2026-09-17 修）、物理备份（xtrabackup 8.0.35 / 2.4.29、mariabackup，平台侧推送免安装）、binlog PITR | ✅ 5.7.44 / 8.0.40 / MariaDB 10.11.19 实跑；全实例 122MB 大库实测**平台 RSS 仅 +22MB**（修复前会 `MemoryError`） |
 | PostgreSQL | `core/engines/postgresql.py` | `pg_dump` / `pg_dumpall` / `pg_basebackup` 物理、`pg_restore` | ✅ 14.12 实跑 |
 | 金仓 KingbaseES | `core/engines/kingbase.py` | `sys_dump` / `sys_dumpall` / `sys_basebackup`，V8/V9R1/V9R3 目录表差异已兼容 | ✅ 137 与 133 实跑 |
 | 达梦 DM8 | `core/engines/dameng.py` | `dexp` / `dimp`、联机 `BACKUP DATABASE FULL`、`dmrman`、DBMS_LOGMNR 日志解析 | ✅ 137 实跑 |
-| Oracle | `core/engines/oracle.py` | `expdp` / `impdp` / RMAN（含 PITR、归档备份），代码内有 11g/19c 兼容分支 | ⚠️ **无端到端验证报告**：唯一专项报告 `oracle_backup_test_report_2026-08-12.md` 结论为 Partial（19c 连通性 Pass，但备份执行因缺 Oracle Client 降级为仿真 `"仿真备份(占位)成功；expdp 客户端不可用"`），此后无备份/恢复 E2E 落盘凭证。仅类型映射层面有覆盖（1281 组冒烟含 Oracle 源） |
+| Oracle | `core/engines/oracle.py` | `expdp` / `impdp` / RMAN（含 PITR、归档备份），代码内有 11g/19c 兼容分支 | ✅ **11g 已端到端验证**（2026-09-17，192.168.220.168）：逻辑备份 #6426、物理备份 #6396、恢复（impdp 真实导入，43→42 行）、实时 LogMiner（真实段 4 行+1292 行）、恢复校验报告 #23（RMAN VALIDATE+抽取数据文件）/#24（impdp SQLFILE）；报告 `docs/oracle_11g_e2e_report_20260917.md`。**19c 仍无端到端报告**；PITR 未验证，见 §9 |
 | SQL Server | `core/engines/sqlserver.py` | 官方 T-SQL `BACKUP DATABASE` FULL/DIFF/LOG、`RESTORE ... WITH MOVE,REPLACE`、`RESTORE VERIFYONLY WITH CHECKSUM` | ✅ 2019 CU27 实跑 |
 | MongoDB | `core/engines/mongodb.py` | `mongodump` / `mongorestore`（含 archive/压缩） | ⚠️ 代码已实现，**本次盘点未见端到端验证记录** |
 | Redis | `core/engines/redis.py` | RDB 备份 | ⚠️ 代码已实现，**未见验证记录** |
@@ -108,12 +108,16 @@
 CDC/实时链路保留了一条「仿真降级」实现：`core/cdc/simulated.py`（`engine_key="simulated"`）。
 命中以下**任一**条件时会被选中（`core/cdc/__init__.py` 的选择逻辑）：
 
-| 触发条件 | 说明 |
-|---|---|
-| `DEMO_MODE=on` | 全局开关，**生产必须为 false** |
-| 任务标记 `demo_only` | 任务级标记 |
-| `rt_mode=sample` | 模式配置显式要求 |
-| **真实引擎依赖 import 失败** | **自动静默降级为仿真**（最危险的一条路径） |
+| 触发条件 | 是否允许仿真 | 说明 |
+|---|---|---|
+| `DEMO_MODE=on` | ✅ 允许 | 全局开关，用户**显式**要求演示，生产必须为 false |
+| 任务标记 `demo_only` | ✅ 允许 | 任务级显式标记 |
+| `rt_mode=sample` | ✅ 允许 | 模式配置显式要求（压测/演练） |
+| 真实引擎未注册 / 实现 import 失败 / **客户端缺失**（如金仓缺 `sys_receivewal`、达梦缺 `dmPython`） | ❌ **默认禁止** | 能力不足导致的**静默**降级：守护进程 `start()` 恒失败 → 任务置 FAILED 并写 error 日志，**不产出任何仿真日志段** |
+
+> 2026-09-17 修正：上表最后一行此前是"自动静默降级为仿真"。实测发现它不仅在构造阶段就把真实实现换成仿真流（绕过了 `db_rt.py` 里"启动失败不降级"的硬化分支），
+> 而且命中面比文档写的更宽——**客户端缺失也会命中**，金仓 task=18、达梦 task=20 因此持续产出 `.simlog`。现已改为受 `RT_ALLOW_SIMULATED_FALLBACK`
+> 约束（默认 false）；确需演练/演示时设 `RT_ALLOW_SIMULATED_FALLBACK=true` 显式开启，或直接用前三种显式条件。
 
 兜底保护：仿真实现产生的**每个恢复点都打 `is_simulated=1`**，UI 显示「仿真」徽标，相关接口响应也会带 `simulated` 标记，
 因此**可识别、可追溯**，不是偷偷造假。
@@ -124,7 +128,7 @@ CDC/实时链路保留了一条「仿真降级」实现：`core/cdc/simulated.py
 3. 一旦出现徽标，说明某条真实链路的依赖没随镜像/离线包带上（缺模块 → import 失败 → 降级），查 import 错误见运维手册 §5.7；
 4. 仿真产生的恢复点**不得**作为 RPO/RTO 承诺或恢复演练通过的证据。
 5. **备份/恢复引擎侧已无假成功风险**（重要澄清，避免误判）：各引擎仍保留名为 `_simulate_backup` / `_simulate_restore` 的历史方法，但自 2026-08-14 起实现已硬化——`core/engines/base.py` 中它们一律返回 `success=False, status=FAILED, message="缺少必要客户端/连接，无法执行真实备份..."`，**不再产出假产物**。因此引擎侧出现这些名字**不是**仿真，缺客户端时会如实失败。真正会产生假数据的只有上面这条 CDC 通道。
-   > 历史背景：2026-08-12 的 Oracle 测试报告记录了 `message = "仿真备份(占位)成功；expdp 客户端不可用"`——那就是这条旧路径造成的**假成功**，现已不可能复现；但该报告同时说明**真实 Oracle 备份当时并未跑通**，此结论至今没有新的报告推翻（见 §3.2 与 §9）。
+   > 历史背景：2026-08-12 的 Oracle 测试报告记录了 `message = "仿真备份(占位)成功；expdp 客户端不可用"`——那就是这条旧路径造成的**假成功**，现已不可能复现。该报告"真实 Oracle 备份未跑通"的结论已于 2026-09-17 被 `docs/oracle_11g_e2e_report_20260917.md`（11g 五类能力全通过）推翻；**19c 与 Oracle PITR 仍是空白**（见 §9）。
 
 ### 3.11 存储与数据生命周期
 
@@ -268,7 +272,10 @@ grep -rhoE "os\.(getenv|environ\.get)\(['\"][A-Z_0-9]+" core api config.py app.p
 | 恶意代码扫描 | 未实现（离线无病毒库） | 只能做启发式异常检测（P1 路线） |
 | 同步：双向 / DDL 同步 | 未实现 | 单向数据流 |
 | MongoDB / Redis / Neo4j / 文件备份 / VM | 无端到端验证记录 | 上线前必须真实演练 |
-| **Oracle 备份 / 恢复 / RMAN / 归档实时** | 唯一专项报告（2026-08-12）结论为 **Partial**：19c 连通性 Pass，但备份执行因本机缺 Oracle Client **降级为仿真**；此后无端到端报告 | **上线前必须在客户真实 Oracle 环境跑通闭环**（备份→拉回→恢复→校验），19c 与 11g 各一轮，并补恢复校验（impdp SQLFILE / RMAN VALIDATE） |
+| **Oracle 11g 备份 / 恢复 / RMAN / 归档实时** | ✅ 已于 2026-09-17 在 192.168.220.168 跑通闭环并落盘报告（`docs/oracle_11g_e2e_report_20260917.md`）：expdp 188KB、RMAN 294MB、impdp 恢复数据真实回退、LogMiner 真实段、恢复校验 #23/#24 | 已闭环。**遗留**：11g 实时依赖 JDBC 兜底（thin 模式不支持 11g），离线交付须带 ojdbc jar 与 JRE；LogMiner 对已删除对象仅能给出 `OBJ#`，按对象名过滤时需注意 |
+| **Oracle 19c 备份 / 恢复 / 实时** | ⚠️ 仍无端到端报告：唯一 19c 相关报告（2026-08-12）结论为 Partial（仅连通性 Pass） | **上线前必须在客户真实 19c 环境跑通闭环**（备份→拉回→恢复→校验），并验证 PDB 自动 OPEN、DATA_PUMP_DIR 按 service 查询等 19c 专属分支 |
+| **Oracle PITR（时间点恢复）** | 未实现为可执行链路：当前仅「生成脚本」，未真实执行 | 不得对客户承诺 Oracle 时间点恢复；如需，必须先真实演练并落盘报告 |
+| **远程通道大实例仍会把产物读进内存** | 仅 MySQL/MariaDB 走 `remote_db_dump_to_file`（远端落盘 + 分块续拉，内存恒定）；PG/金仓/openGauss/Redis/MongoDB 及 **MySQL 单库**仍调用旧 `remote_db_dump`（返回整包 `bytes`） | 远程备份超大实例（产物接近平台可用内存）可能失败。**本机通道不受影响**（已全部流式落盘）；失败消息现已显示异常类型名，不再是空白原因。整改方向见 `core/remote_dump.py::remote_db_dump_to_file` 注释 |
 | 委托 Global 去重为全局单实例 | 依赖 `dedup_index` | 元库损坏需重建索引 |
 | AI 助手依赖外部 LLM | 离线环境不可用 | 默认关闭，非卖点 |
 | 全量 pytest 存在用例间共享临时库污染 | 170+ failed（既有，非功能缺陷） | 见下方「回归基线」 |

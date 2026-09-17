@@ -154,8 +154,25 @@ class DbRtCapture:
             self.logger.error("[rt.cdc] task=%s %s", self.task_id, self.last_error)
 
         if not started:
-            # 真实实现启动失败 → 就地降级到仿真，保证链路不中断（R6）
             self.last_error = self.last_error or self.daemon.last_error
+            # 真实实现启动失败：默认**不再**就地降级为仿真日志流。
+            # 仿真恢复点不能作为 RPO/RTO 承诺或演练通过的证据，宁可诚实置 FAILED
+            # 让运维看见，也不能让「看起来连续」的假数据跑在实时保护链路上。
+            # 仅当显式开启 RT_ALLOW_SIMULATED_FALLBACK=true 时才恢复旧降级行为。
+            if not getattr(config, "RT_ALLOW_SIMULATED_FALLBACK", False):
+                fallback_reason = (f"{self.daemon.display_name} 启动失败"
+                                   f"（{self.last_error or '原因未知'}）；"
+                                   "按配置不降级仿真，实时保护已停止")
+                self.logger.error("[rt.cdc] task=%s %s", self.task_id,
+                                  fallback_reason)
+                db.add_log("error", "rt.cdc",
+                           f"任务 {self.task_name} 数据库日志流捕获启动失败："
+                           f"{self.last_error or '原因未知'}（未降级仿真）")
+                with self._state_lock:
+                    self._started = False
+                    self.daemon_status = STATUS_FAILED
+                    self._persist_state()
+                return False
             fallback_reason = (f"{self.daemon.display_name} 启动失败"
                                f"（{self.last_error or '原因未知'}），已降级仿真日志流")
             self.logger.warning("[rt.cdc] task=%s %s", self.task_id, fallback_reason)
