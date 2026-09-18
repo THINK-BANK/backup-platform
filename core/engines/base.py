@@ -94,6 +94,31 @@ def _is_network_error(exc: Exception) -> bool:
     return any(k in msg for k in network_keywords)
 
 
+def _local_failure_hint(err) -> str:
+    """给"本机执行失败"配一句**针对性**的后续动作建议。
+
+    此前的文案不分原因，一律写"请确认已安装客户端工具…再纳管 SSH 主机"：在
+    "平台与数据库同机 + 磁盘写满(errno 28)"这类场景下完全是误导——用户既不需要
+    SSH，也不需要装客户端。这里按真实错误分类，只给对得上的那一条建议。
+    """
+    e = str(err or "").lower()
+    if any(m in e for m in ("errno 28", "no space left", "disk full", "enospc",
+                            "quota exceeded", "not enough space", "空间不足")):
+        return ("原因是磁盘空间不足（ENOSPC）。请清理对应分区，或把任务「产物根目录」"
+                "改到空间充足的分区；临时工作目录可用环境变量 BP_WORK_DIR 指定。")
+    if any(m in e for m in ("command not found", "命令不存在", "未找到 sql 客户端",
+                            "未找到客户端", "no such file or directory",
+                            "没有那个文件或目录", "未安装")):
+        return ("原因是数据库客户端命令缺失。请在备份平台本机安装或指定对应客户端"
+                "（如 mysqldump/pg_dump/expdp），也可在任务高级选项用 tool_path 指定目录。")
+    if any(m in e for m in ("access denied", "认证", "1045", "connection refused",
+                            "can't connect", "无法连接", "timed out", "超时")):
+        return ("原因是连接或认证失败。请核对任务里的地址、端口、用户与密码，"
+                "并确认数据库允许从平台机连接。")
+    return ("该任务未纳管 SSH 备份机，因此仅在本机执行；如需在数据库服务器上执行，"
+            "可在「SSH 主机」中纳管后重试。请按上面给出的原始错误继续排查。")
+
+
 def _err_text(exc: BaseException) -> str:
     """异常文本；``str()`` 为空的异常（``MemoryError`` 等）退化为类型名。
 
@@ -991,8 +1016,8 @@ class BackupEngine:
         else:
             # 本机是唯一通道，此时提示"去纳管 SSH"是误导：同机场景本机客户端才是正解
             msg = (f"{label} 失败，本机执行未成功: {local_error or '原因未知'}。"
-                   f"该任务未纳管 SSH 备份机；请先确认备份平台已安装对应数据库客户端工具"
-                   f"（如 mysqldump/pg_dump/expdp），确需在数据库服务器上执行时再纳管 SSH 主机。")
+                   + _local_failure_hint(local_error))
+
         return BackupResult(success=False, status=BackupStatus.FAILED, message=msg)
 
     # ---------------- 子类需实现 ----------------

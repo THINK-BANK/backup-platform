@@ -22,6 +22,12 @@ else:
 
 # ---------- 路径 ----------
 BACKUP_ROOT = os.environ.get("BACKUP_ROOT", str(BASE_DIR / "backups"))
+
+# 全实例备份/恢复的临时工作目录（逐库 dump 落盘后再打包）。
+# 留空 = 自动选择「产物所在分区下的 .bp_work」，再回退系统临时目录。
+# 不再默认用 /tmp：/tmp 常是小分区或 tmpfs，大实例会把它写满，mysqldump
+# 只会报 "Got errno 28 on write"（ENOSPC），用户看不出到底哪里满了。
+FULL_INSTANCE_WORK_DIR = os.environ.get("BP_WORK_DIR", "")
 INSTANCE_DIR = Path(os.environ.get("INSTANCE_DIR", str(BASE_DIR / "instance")))
 META_DB_PATH = os.environ.get("META_DB_PATH", str(INSTANCE_DIR / "meta.db"))
 LOG_DIR = Path(os.environ.get("LOG_DIR", str(BASE_DIR / "logs")))

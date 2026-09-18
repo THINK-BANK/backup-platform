@@ -25,6 +25,7 @@ import io
 import os
 import json
 import shlex
+import fnmatch
 import time
 import tarfile
 import tempfile
@@ -576,15 +577,50 @@ def _ssh_exec_pipe_to_file(client, cmd: str, out_path: str, *, timeout: int = 0,
 
 # ---------- 文件列表获取 ----------
 
-def _get_local_file_list(base_path: str) -> Dict[str, Tuple[int, int]]:
-    """获取本地目录下所有文件的 {相对路径: (大小, mtime)} 映射。"""
+def _match_excludes(rel: str, excludes) -> bool:
+    """判断相对路径是否命中排除规则。
+
+    规则语义（与前端提示一致）：
+      - ``*.log``      —— fnmatch 匹配，``*`` 可跨目录（子目录里的 .log 也会命中）
+      - ``__pycache__``—— 不含通配符的名称，路径中**任一段**等于它即命中
+    """
+    rel = (rel or "").replace("\\", "/")
+    for pat in (excludes or []):
+        pat = (pat or "").strip().replace("\\", "/")
+        if not pat:
+            continue
+        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(rel), pat):
+            return True
+        if "/" not in pat and "*" not in pat and "?" not in pat:
+            if pat in rel.split("/"):
+                return True
+    return False
+
+
+def _get_local_file_list(base_path: str, excludes=None) -> Dict[str, Tuple[int, int]]:
+    """获取本地路径的文件列表 {相对路径: (大小, mtime)}。
+
+    base_path 可以是目录（递归）或**单个文件**（返回 {文件名: (大小, mtime)}）。
+    excludes 必须与打包时使用同一套规则：快照即"归档里到底有什么"，
+    否则会出现"包里没有、快照却记着"的假一致，恢复时静默缺文件。
+    """
     result = {}
+    if os.path.isfile(base_path):
+        if not _match_excludes(os.path.basename(base_path), excludes):
+            try:
+                st = os.stat(base_path)
+                result[os.path.basename(base_path)] = (st.st_size, int(st.st_mtime))
+            except OSError:
+                pass
+        return result
     if not os.path.isdir(base_path):
         return result
     for dirpath, _dirs, files in os.walk(base_path):
         for f in files:
             fpath = os.path.join(dirpath, f)
-            rel = os.path.relpath(fpath, base_path)
+            rel = os.path.relpath(fpath, base_path).replace("\\", "/")
+            if _match_excludes(rel, excludes):
+                continue
             try:
                 st = os.stat(fpath)
                 result[rel] = (st.st_size, int(st.st_mtime))
@@ -593,17 +629,20 @@ def _get_local_file_list(base_path: str) -> Dict[str, Tuple[int, int]]:
     return result
 
 
-def _get_remote_file_list(client, remote_path: str) -> Optional[Dict[str, Tuple[int, int]]]:
-    """通过 SSH find 获取远程目录的文件列表。"""
+def _get_remote_file_list(client, remote_path: str, excludes=None
+                          ) -> Optional[Dict[str, Tuple[int, int]]]:
+    """通过 SSH find 获取远程路径的文件列表（目录递归 / 单文件返回其自身）。"""
+    q = shlex.quote(remote_path)
     cmd = (
-        f'cd {shlex.quote(remote_path)} 2>/dev/null && '
-        f'find . -type f -printf "%p\\t%s\\t%T@\\n" 2>/dev/null || true'
+        f'if [ -d {q} ]; then cd {q} && find . -type f -printf "%p\\t%s\\t%T@\\n" 2>/dev/null; '
+        f'elif [ -f {q} ]; then find {q} -maxdepth 0 -type f -printf "%f\\t%s\\t%T@\\n" 2>/dev/null; '
+        f'fi; true'
     )
     out, err, rc = _ssh_exec(client, cmd, timeout=30)
     if rc not in (0, 1):
         return None
     result = {}
-    for line in out.strip().split("\n"):
+    for line in (out or "").strip().split("\n"):
         if not line:
             continue
         parts = line.split("\t")
@@ -611,11 +650,113 @@ def _get_remote_file_list(client, remote_path: str) -> Optional[Dict[str, Tuple[
             continue
         rel, sz, mt = parts
         rel = rel.lstrip("./")
+        if _match_excludes(rel, excludes):
+            continue
         try:
             result[rel] = (int(sz), int(float(mt)))
         except (ValueError, TypeError):
             pass
     return result
+
+
+# ---------- 源路径探测 / 打包命令构造 ----------
+#
+# 源路径既可能是目录，也可能是**单个文件**（前端是"源路径（每行一个）"）。
+# 早先实现一律按目录处理（`cd <路径> && tar -C <路径> -czf - .`）：把文件当目录
+# 会得到 `tar: xxx: Not a directory`，而这个错误又被命令里的 `2>/dev/null` 吞掉，
+# 最终上报成「源打包失败: 」（冒号后一片空白）——用户完全无法排查。
+# 现在的做法：先真实探测每个路径的类型，再按类型生成命令；探不到就明确报错。
+
+SRC_KIND_DIR = "dir"
+SRC_KIND_FILE = "file"
+
+_KIND_LABEL = {"dir": "目录", "file": "文件", "other": "特殊文件（不支持）",
+               "missing": "不存在"}
+
+
+def _probe_local_paths(paths: List[str]) -> Dict[str, str]:
+    kinds = {}
+    for p in paths:
+        if os.path.isdir(p):
+            kinds[p] = SRC_KIND_DIR
+        elif os.path.isfile(p):
+            kinds[p] = SRC_KIND_FILE
+        elif os.path.exists(p):
+            kinds[p] = "other"
+        else:
+            kinds[p] = "missing"
+    return kinds
+
+
+def _probe_remote_paths(client, paths: List[str]) -> Dict[str, str]:
+    """一次 SSH 往返探测所有远程路径的类型（D=目录 F=文件 O=特殊 M=不存在）。"""
+    if not paths:
+        return {}
+    loop = " ".join(shlex.quote(p) for p in paths)
+    cmd = (
+        "for p in %s; do "
+        'if [ -d "$p" ]; then k=D; '
+        'elif [ -f "$p" ]; then k=F; '
+        'elif [ -e "$p" ]; then k=O; else k=M; fi; '
+        "printf '%%s\\t%%s\\n' \"$k\" \"$p\"; done" % loop
+    )
+    out, err, rc = _ssh_exec(client, cmd, timeout=30)
+    if rc != 0 and not (out or "").strip():
+        raise RuntimeError(
+            "探测源路径失败(rc=%d): %s" % (rc, (err or "").strip() or "无 stderr 输出"))
+    mapping = {"D": SRC_KIND_DIR, "F": SRC_KIND_FILE, "O": "other", "M": "missing"}
+    kinds = {p: "missing" for p in paths}
+    for line in (out or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        kinds[parts[1]] = mapping.get(parts[0].strip(), "missing")
+    return kinds
+
+
+def _kind_desc(kinds: Dict[str, str]) -> str:
+    return "、".join("%s（%s）" % (p, _KIND_LABEL.get(k, k)) for p, k in kinds.items())
+
+
+def _tar_fail_msg(stage: str, rc: int, err, cmd: str, extra: str = "") -> str:
+    """打包/解包失败的**真实**原因：退出码 + stderr（含磁盘/权限等）+ 实际命令。
+
+    stderr 为空时不再输出空白原因，而是明确说明命令没有给出错误信息，
+    避免再次出现「源打包失败: 」这种无法排查的消息。
+    """
+    e = err or ""
+    if isinstance(e, bytes):
+        e = e.decode("utf-8", "replace")
+    e = e.strip()
+    if not e:
+        e = ("命令未输出任何错误信息（rc=%d），请检查路径权限、"
+             "目标端磁盘空间与 tar 是否可用" % rc)
+    msg = "%s失败(rc=%d): %s" % (stage, rc, e[:400])
+    if extra:
+        msg += " | %s" % extra
+    return "%s | 实际命令: %s" % (msg, cmd)
+
+
+def _build_tar_cmd(pairs, excludes=None) -> str:
+    """按路径类型生成远程打包命令（GNU/BSD tar 通用）。
+
+    - 目录：``-C <目录> .``（保持"备份目录内容"的既有语义）
+    - 文件：``-C <父目录> <文件名>``（备份文件本身）
+    多路径顺序拼接多个 -C。exclude 规则在这里真正生效——此前前端填的排除规则
+    从未传给 tar，属于"界面有、实际不生效"的假功能。
+    """
+    parts = ["tar", "-czf", "-"]
+    for ex in (excludes or []):
+        ex = (ex or "").strip()
+        if ex:
+            parts.append("--exclude=%s" % ex)
+    for path, kind in pairs:
+        p = (path or "").rstrip("/") or "/"
+        if kind == SRC_KIND_DIR:
+            parts += ["-C", path, "."]
+        else:
+            parts += ["-C", os.path.dirname(p) or "/", os.path.basename(p)]
+    return " ".join(shlex.quote(p) for p in parts)
 
 
 class FileBackupEngine(BackupEngine):
@@ -667,6 +808,37 @@ class FileBackupEngine(BackupEngine):
             "host": self.extra.get("source_host", ""),
         }
 
+    def _resolve_src_pairs(self, src: dict) -> List[Tuple[str, str]]:
+        """探测源路径类型（带缓存），返回 [(路径, 'dir'|'file')]。
+
+        探测是**真实执行**的（远程走一次 SSH `-d/-f` 判定），任何路径不存在或类型
+        不支持都直接报错：宁可失败得明明白白，也不打出一个空包冒充成功。
+        """
+        paths = list(src.get("paths") or [])
+        src_type = src.get("type")
+        key = (src_type, tuple(paths), src.get("host"))
+        cache = getattr(self, "_src_pairs_cache", None)
+        if cache and cache[0] == key:
+            return cache[1]
+
+        where = "备份平台本机" if src_type == "local" else ("主机 %s" % src.get("host"))
+        if src_type == "local":
+            kinds = _probe_local_paths(paths)
+        else:
+            kinds = _probe_remote_paths(_get_ssh_client(src["host"]), paths)
+
+        bad = {p: k for p, k in kinds.items() if k in ("missing", "other")}
+        if bad:
+            raise RuntimeError(
+                "%s 上不可用的源路径: %s。请修正任务里的源路径"
+                "（每行一个，目录或单个文件均可）" % (where, _kind_desc(bad)))
+
+        pairs = [(p, kinds[p]) for p in paths]
+        self.logger.info("[%s] 源路径判定(%s): %s", self.task_name, where,
+                         "，".join("%s=%s" % (p, k) for p, k in pairs))
+        self._src_pairs_cache = (key, pairs)
+        return pairs
+
     # ---------------- 备份主流程 ----------------
 
     def backup(self, backup_type: BackupType) -> BackupResult:
@@ -680,10 +852,19 @@ class FileBackupEngine(BackupEngine):
 
         t0 = time.time()
 
-        if backup_type == BackupType.INCREMENTAL:
-            result = self._incremental_transfer(src, dst)
-        else:
-            result = self._full_transfer(src, dst)
+        # 打包/传输过程中的异常统一收敛成"失败结果 + 真实原因"：
+        # 抛到上层只会显示成笼统的"执行异常"，而真实原因（tar 的 stderr、
+        # 磁盘写满、权限拒绝等）恰恰是用户唯一能据以排查的信息。
+        try:
+            if backup_type == BackupType.INCREMENTAL:
+                result = self._incremental_transfer(src, dst)
+            else:
+                result = self._full_transfer(src, dst)
+        except Exception as e:
+            return BackupResult(
+                success=False, status=BackupStatus.FAILED,
+                duration_sec=round(time.time() - t0, 2),
+                message="文件备份失败: %s" % (str(e) or type(e).__name__))
 
         duration = round(time.time() - t0, 2)
         result.duration_sec = duration
@@ -760,6 +941,16 @@ class FileBackupEngine(BackupEngine):
                 message="未配置源路径(source_paths)",
             )
 
+        # 先真实探测每个源路径的类型（目录/文件/不存在），再决定打包方式。
+        # 绝不在"路径不存在"时默默打出空包——那会让备份显示成功却什么都没备份到。
+        try:
+            pairs = self._resolve_src_pairs(src)
+        except RuntimeError as e:
+            return BackupResult(
+                success=False, status=BackupStatus.FAILED,
+                message="源路径检查未通过: %s" % (str(e) or type(e).__name__),
+            )
+
         # 目标为本地且指定了路径时，归档直接落到用户配置的本地目录，方便查找
         if dst_type == "local" and dst.get("path"):
             out_dir = dst["path"]
@@ -771,22 +962,25 @@ class FileBackupEngine(BackupEngine):
         archive_name = f"{ts}__{self.task_name}__full.tar.gz"
         archive_path = os.path.join(out_dir, archive_name)
 
-        # 获取源文件列表用于快照（供下次增量对比）
-        base = paths[0] if paths else "/"
+        # 快照必须等于"归档里真实有什么"：用与打包**同一套**排除规则，
+        # 否则会出现"包里没有、快照却记着"的假一致，恢复时静默缺文件。
+        # （多源任务仍以第一个源作为快照基准，与既有增量语义一致。）
+        base = pairs[0][0] if pairs else "/"
         sf = {}
         if src_type == "local":
-            sf = _get_local_file_list(base)
+            sf = _get_local_file_list(base, self._excludes())
         else:
             try:
                 client = _get_ssh_client(src["host"])
-                sf = _get_remote_file_list(client, base) or {}
+                sf = _get_remote_file_list(client, base, self._excludes()) or {}
             except Exception as e:
-                self.logger.warning("[%s] 获取远程源文件列表失败: %s", self.task_name, e)
+                self.logger.warning("[%s] 获取远程源文件列表失败: %s",
+                                    self.task_name, str(e) or type(e).__name__)
 
         # 根据源/目标组合选择打包器。本地源→本地目标走自管理(先进压缩)的
         # _tar_local；其余组合走原有原子写入包装（系统 tar 压缩）。
         if src_type == "local" and dst_type == "local":
-            self._tar_local(paths, archive_path)
+            self._tar_local(paths, archive_path, self._excludes())
         else:
             def _writer(tmp_path: str):
                 if src_type == "local" and dst_type == "remote":
@@ -887,6 +1081,9 @@ class FileBackupEngine(BackupEngine):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             meta = self._load_snapshot_meta(namespace)
             meta["files"] = snapshot
+            # 记下本次快照使用的排除规则：下次增量据此判断"规则是否变化"，
+            # 避免把规则变化误当成大量文件被删除。
+            meta["excludes"] = [str(x) for x in (self._excludes() or [])]
             if full_path:
                 meta["last_full_path"] = full_path
             with open(path, "w", encoding="utf-8") as f:
@@ -917,14 +1114,23 @@ class FileBackupEngine(BackupEngine):
 
         src_type = src["type"]
         dst_type = dst["type"]
-        base = src["paths"][0] if src["paths"] else "/"
 
-        # 1) 获取源文件列表
+        # 源路径真实探测（不存在/类型不支持直接失败，不做"空包成功"）
+        try:
+            pairs = self._resolve_src_pairs(src)
+        except RuntimeError as e:
+            return BackupResult(
+                success=False, status=BackupStatus.FAILED,
+                message="源路径检查未通过: %s" % (str(e) or type(e).__name__))
+        base = pairs[0][0] if pairs else "/"
+        ex = self._excludes()
+
+        # 1) 获取源文件列表（与打包同一套排除规则，保证"快照 == 归档里有什么"）
         if src_type == "local":
-            sf = _get_local_file_list(base)
+            sf = _get_local_file_list(base, ex)
         else:
             client = _get_ssh_client(src["host"])
-            sf = _get_remote_file_list(client, base)
+            sf = _get_remote_file_list(client, base, ex)
             if sf is None:
                 self.logger.warning("[%s] 远程源列表获取失败，回退全量", self.task_name)
                 return self._full_transfer(src, dst)
@@ -937,6 +1143,18 @@ class FileBackupEngine(BackupEngine):
 
         # 3) 计算差异
         changed, deleted = self._diff_against_snapshot(sf, snapshot)
+
+        # 排除规则一旦变化（含"旧快照还没有排除规则"），旧快照里那些被排除的文件
+        # 会被 diff 误判成"已删除"，进而写进 .deleted.txt 在恢复时真被删掉。
+        # 规则变化不是文件删除：此处只按新规则重建基准，不做删除判定。
+        old_ex = [str(x) for x in (self._load_snapshot_meta().get("excludes") or [])]
+        if old_ex != [str(x) for x in (ex or [])]:
+            if deleted:
+                self.logger.warning(
+                    "[%s] 排除规则已变化（旧=%s 新=%s），本次不判定删除文件"
+                    "（原本会误判 %d 个），仅按新规则重建快照基准",
+                    self.task_name, old_ex or "无", ex or "无", len(deleted))
+            deleted = []
         self.logger.info(
             "[%s] 增量对比: 总计=%d 变化=%d 删除=%d",
             self.task_name, len(sf), len(changed), len(deleted),
@@ -1221,13 +1439,16 @@ class FileBackupEngine(BackupEngine):
                 pass
             raise
 
-    def _tar_local(self, paths: List[str], archive_path: str):
+    def _tar_local(self, paths: List[str], archive_path: str, excludes=None):
         """本地多路径 → 本地归档（先进压缩：zstd，回退 gzip）。
 
         先以未压缩 tar 写入临时文件，再用 zstd（或 gzip 回退）流式压缩为
         ``<archive>.zst``，同时记录未压缩的 tar 字节数供计算压缩率。
         产物直接落盘到 ``archive_path``（含后缀），self 调用方用
         :meth:`_final_archive_path` 取真实路径。
+
+        paths 中的元素可以是目录（备份目录内容）或**单个文件**（备份文件本身）；
+        excludes 在此真正生效（此前前端填了排除规则却永远不会被使用）。
         """
         algo = self._resolve_compress_algo()
         suffix = "" if algo == "none" else (".zst" if algo == "zstd" else ".gz")
@@ -1236,12 +1457,29 @@ class FileBackupEngine(BackupEngine):
         os.makedirs(parent, exist_ok=True)
         fd, tmp_tar = tempfile.mkstemp(prefix=".tmp_", suffix=".tar", dir=parent)
         os.close(fd)
+
+        def _ex_flt(ti):
+            # 命中排除规则返回 None = 该条目不写入归档（连目录条目一起跳过）
+            if _match_excludes(ti.name.replace("\\", "/"), excludes):
+                return None
+            return ti
+
         try:
+            single = len(paths) == 1
             common = os.path.commonpath(paths) if len(paths) > 1 else (paths[0] if paths else "/")
             with tarfile.open(tmp_tar, "w") as tf:
                 for p in paths:
-                    if os.path.exists(p):
-                        tf.add(p, arcname=os.path.relpath(p, common) if common != "/" else os.path.basename(p))
+                    if not os.path.exists(p):
+                        # 静默跳过 = 备份成功但少了用户配置的内容（假成功），必须报错
+                        raise RuntimeError("本地源路径不存在: %s" % p)
+                    if os.path.isfile(p):
+                        arc = os.path.basename(p)
+                    elif single:
+                        arc = "."
+                    else:
+                        arc = (os.path.relpath(p, common) if common != "/"
+                               else os.path.basename(p))
+                    tf.add(p, arcname=arc, filter=_ex_flt)
             original = os.path.getsize(tmp_tar)
             if os.path.exists(final_path):
                 os.unlink(final_path)
@@ -1284,13 +1522,24 @@ class FileBackupEngine(BackupEngine):
     def _tar_remote_files(self, changed: List[str], src: dict, archive_path: str) -> bool:
         """远程源 → 本地增量归档：通过 tar -T 仅打包变化文件（原子写入）。"""
         client = _get_ssh_client(src["host"])
-        remote_base = src["paths"][0] if src["paths"] else "/"
-        data, err, rc = _ssh_exec_pipe(
-            client, f'tar -C {shlex.quote(remote_base)} -czf - -T -',
-            input_data="\n".join(changed).encode("utf-8"),
-        )
+        pairs = self._resolve_src_pairs(src)
+        base = pairs[0][0] if pairs else "/"
+        ex = self._excludes()
+        if pairs and pairs[0][1] == SRC_KIND_FILE:
+            # 源就是单个文件：它本身是最小单位，整体打包（无需 -T 列表）
+            cmd = _build_tar_cmd(pairs, ex)
+            payload = None
+        else:
+            parts = ["tar", "-czf", "-"]
+            for e in (ex or []):
+                if (e or "").strip():
+                    parts.append("--exclude=%s" % e.strip())
+            parts += ["-C", base, "-T", "-"]
+            cmd = " ".join(shlex.quote(p) for p in parts)
+            payload = "\n".join(changed).encode("utf-8")
+        data, err, rc = _ssh_exec_pipe(client, cmd, input_data=payload)
         if rc != 0:
-            raise RuntimeError(f"远程打包失败: {err}")
+            raise RuntimeError(_tar_fail_msg("远程打包", rc, err, cmd))
         if not _safe_write_via_temp(archive_path, data, self.logger):
             raise RuntimeError("本地写入增量归档失败")
         return True
@@ -1424,73 +1673,140 @@ class FileBackupEngine(BackupEngine):
         try:
             with os.fdopen(fd, "w") as f:
                 f.write("\n".join(paths) + "\n")
+            cmd = ["tar", "-czf", "-"]
+            for ex in (self._excludes() or []):
+                if (ex or "").strip():
+                    cmd.append("--exclude=%s" % ex.strip())
+            cmd += ["-C", "/", "-T", flist]
             proc = subprocess.Popen(
-                ["tar", "-C", "/", "-czf", "-", "-T", flist],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
             data, err = proc.communicate()
             if proc.returncode != 0:
-                raise RuntimeError(f"本地打包失败: {err.decode('utf-8', 'replace')}")
+                raise RuntimeError(_tar_fail_msg(
+                    "本地打包", proc.returncode, err, " ".join(cmd)))
             # 写本地存档副本（原子写入）
             if not _safe_write_via_temp(archive_path, data, self.logger):
                 raise RuntimeError("本地写入归档副本失败")
             # 传到远程解压
             client = _get_ssh_client(dst["host"])
-            _, e, rc = _ssh_exec_pipe(
-                client,
-                f'mkdir -p {shlex.quote(dst["path"])} && tar -C {shlex.quote(dst["path"])} -xzf -',
-                input_data=data,
-            )
+            dcmd = (f'mkdir -p {shlex.quote(dst["path"])} && '
+                    f'tar -C {shlex.quote(dst["path"])} -xzf -')
+            _, e, rc = _ssh_exec_pipe(client, dcmd, input_data=data)
             if rc != 0:
-                raise RuntimeError(f"远程解压失败: {e}")
+                raise RuntimeError(_tar_fail_msg("远程解压", rc, e, dcmd,
+                                                 extra="目标: %s:%s" % (dst["host"], dst["path"])))
         finally:
             os.unlink(flist)
 
     def _tar_remote_to_local(self, src: dict, archive_path: str):
-        """远程 → 本地：SSH 端 tar 打包 → SFTP/pipe 下载到本地。"""
+        """远程 → 本地：SSH 端 tar 打包 → **流式落盘**到本地归档。
+
+        全程不把产物读进内存：此前是整包 bytes 回内存，大目录会把平台内存撑爆
+        （表现为 MemoryError，而它的 str() 是空字符串，只会留下一个空白原因）。
+        """
         self.logger.info("[%s] [1/3] 连接远程主机: %s", self.task_name, src["host"])
         client = _get_ssh_client(src["host"])
-        remote_base = src["paths"][0] if src["paths"] else "/"
+        pairs = self._resolve_src_pairs(src)
+        cmd = _build_tar_cmd(pairs, self._excludes())
 
-        self.logger.info("[%s] [2/3] 远程打包中 (tar -C %s -czf - .)，请耐心等待...", self.task_name, remote_base)
+        self.logger.info("[%s] [2/3] 远程打包中: %s", self.task_name, cmd)
         t0 = time.time()
-        out, err, rc = _ssh_exec_pipe(
-            client, f'tar -C {shlex.quote(remote_base)} -czf - . 2>/dev/null',
-            timeout=1800,  # 大目录最多等 30 分钟
-        )
+        r = _ssh_exec_pipe_to_file(client, cmd, archive_path, timeout=1800,
+                                   label=self.task_name, resume=False)
         elapsed = round(time.time() - t0, 1)
-        self.logger.info("[%s] SSH tar 完成, 耗时=%ss, rc=%d, size=%d bytes",
-                         self.task_name, elapsed, rc, len(out))
-        if rc != 0:
-            raise RuntimeError(f"远程打包失败(rc={rc}): {err}")
-
-        self.logger.info("[%s] [3/3] 写入本地归档: %s (%d bytes)", self.task_name, archive_path, len(out))
-        # 使用原子写入，避开 Windows 防病毒/WinRAR 扫描导致的句柄锁
-        if not _safe_write_via_temp(archive_path, out, self.logger):
-            raise RuntimeError(f"写入本地归档失败: {archive_path}")
-        self.logger.info("[%s] 归档写入完成: %s", self.task_name, archive_path)
+        self.logger.info("[%s] SSH tar 完成, 耗时=%ss, rc=%s, size=%s",
+                         self.task_name, elapsed, r.get("rc"),
+                         db.human_size(r.get("written") or 0))
+        if r.get("rc") != 0:
+            try:
+                if os.path.exists(archive_path):
+                    os.unlink(archive_path)
+            except OSError:
+                pass
+            raise RuntimeError(_tar_fail_msg(
+                "远程打包", r.get("rc") or -1, r.get("err"), cmd,
+                extra="源主机: %s" % src["host"]))
+        self.logger.info("[%s] [3/3] 归档落盘完成: %s", self.task_name, archive_path)
 
     def _tar_remote_to_remote(self, src: dict, dst: dict, archive_path: str):
-        """远程 → 远程（中转）：从源打包 → 经本机 pipe 到目标解压。"""
+        """远程 → 远程：源打包 → 本机临时文件（流式）→ SFTP 上传 → 目标解压。
+
+        两处关键约束：
+        1. **不把整包读进内存**（此前 `tar stdout` 全量 bytes + 再整包传目标，
+           大目录会撑爆平台内存）；
+        2. 本机中转文件放在**归档同目录**而非 /tmp —— /tmp 常是小分区/tmpfs，
+           大包会直接写满报 ENOSPC。
+        """
+        pairs = self._resolve_src_pairs(src)
+        cmd = _build_tar_cmd(pairs, self._excludes())
         client_src = _get_ssh_client(src["host"])
-        remote_base = src["paths"][0] if src["paths"] else "/"
-        data, err, rc = _ssh_exec_pipe(
-            client_src, f'tar -C "{remote_base}" -czf - . 2>/dev/null',
-        )
-        if rc != 0:
-            raise RuntimeError(f"源打包失败: {err}")
-        # 存档到本地（data 已是 bytes，原子写入）
-        if not _safe_write_via_temp(archive_path, data, self.logger):
-            raise RuntimeError(f"写入本地归档失败: {archive_path}")
-        # 传到目标
-        client_dst = _get_ssh_client(dst["host"])
-        _, e, rc2 = _ssh_exec_pipe(
-            client_dst,
-            f'mkdir -p {shlex.quote(dst["path"])} && tar -C {shlex.quote(dst["path"])} -xzf -',
-            input_data=data,
-        )
-        if rc2 != 0:
-            raise RuntimeError(f"目标解压失败: {e}")
+        dst_dir = (dst.get("path") or "/").rstrip("/") or "/"
+
+        parent = os.path.dirname(archive_path) or "."
+        os.makedirs(parent, exist_ok=True)
+        fd, tmp_arc = tempfile.mkstemp(prefix=".tmp_up_", suffix=".tar.gz", dir=parent)
+        os.close(fd)
+        remote_tmp = ""
+        try:
+            # ---- 1) 源端打包，流式落到本机临时文件 ----
+            self.logger.info("[%s] [1/4] 源端打包: %s", self.task_name, cmd)
+            r = _ssh_exec_pipe_to_file(client_src, cmd, tmp_arc, timeout=1800,
+                                       label=self.task_name, resume=False)
+            if r.get("rc") != 0:
+                raise RuntimeError(_tar_fail_msg(
+                    "源打包", r.get("rc") or -1, r.get("err"), cmd,
+                    extra="源主机: %s" % src["host"]))
+            size = os.path.getsize(tmp_arc)
+            self.logger.info("[%s] [2/4] 源端打包完成: %s",
+                             self.task_name, db.human_size(size))
+
+            # ---- 2) 上传到目标主机（SFTP 流式，不经内存） ----
+            client_dst = _get_ssh_client(dst["host"])
+            q_dir = shlex.quote(dst_dir)
+            _, e, rc = _ssh_exec(client_dst, "mkdir -p %s" % q_dir, timeout=60)
+            if rc != 0:
+                raise RuntimeError(_tar_fail_msg(
+                    "创建目标目录", rc, e, "mkdir -p %s" % dst_dir,
+                    extra="目标主机: %s" % dst["host"]))
+            remote_tmp = "%s/.bp_upload_%d_%d.tar.gz" % (dst_dir, int(time.time()),
+                                                         os.getpid())
+            self.logger.info("[%s] [3/4] 上传到目标主机 %s:%s",
+                             self.task_name, dst["host"], remote_tmp)
+            sftp = client_dst.open_sftp()
+            try:
+                with open(tmp_arc, "rb") as fh:
+                    sftp.putfo(fh, remote_tmp)
+            finally:
+                sftp.close()
+
+            # ---- 3) 目标端解压并清理临时包 ----
+            xcmd = ("tar -C %s -xzf %s && rm -f %s"
+                    % (q_dir, shlex.quote(remote_tmp), shlex.quote(remote_tmp)))
+            _, e2, rc2 = _ssh_exec(client_dst, xcmd, timeout=1800)
+            if rc2 != 0:
+                raise RuntimeError(_tar_fail_msg(
+                    "目标解压", rc2, e2, xcmd,
+                    extra="目标: %s:%s" % (dst["host"], dst_dir)))
+            remote_tmp = ""
+
+            # ---- 4) 本地留档（原子替换，保持既有"本机也存一份"的语义） ----
+            if os.path.exists(archive_path):
+                os.unlink(archive_path)
+            os.replace(tmp_arc, archive_path)
+            self.logger.info("[%s] [4/4] 本地留档: %s", self.task_name, archive_path)
+        finally:
+            try:
+                if os.path.exists(tmp_arc):
+                    os.unlink(tmp_arc)
+            except OSError:
+                pass
+            if remote_tmp:
+                try:
+                    _ssh_exec(_get_ssh_client(dst["host"]),
+                              "rm -f %s" % shlex.quote(remote_tmp), timeout=30)
+                except Exception:
+                    pass
 
     # ---------------- 恢复 ----------------
 

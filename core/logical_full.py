@@ -18,12 +18,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 import tarfile
 import tempfile
 import time
+
+import config
+
+logger = logging.getLogger(__name__)
 
 # PG 协议系（逐库 dump + globals 语义一致），新增同源库时加入此元组即可
 PG_FAMILY = ("postgresql", "kingbase", "opengauss")
@@ -111,6 +116,206 @@ def _which_any(*names: str) -> str:
     return ""
 
 
+# --------------------------------------------------------------------------- #
+# 临时工作目录与磁盘空间
+#
+# 全实例备份要先把每个库 dump 成本地文件、再打成 tar.gz。工作目录原先固定为
+# tempfile 默认的 /tmp，而 /tmp 常常是小分区或 tmpfs：大实例写满后 mysqldump
+# 立刻以 `Got errno 28 on write`（ENOSPC = 设备已满）失败，用户看到的却只是
+# 一句"dump 失败(rc=5)"，根本不知道写哪个路径满了、还差多少空间。
+# 现在：工作目录默认与产物同盘，dump 之前先做真实的容量预检查，
+# 失败时给出真实数字（可用空间/预计占用）与可执行的处置建议。
+# --------------------------------------------------------------------------- #
+
+def human_size(n) -> str:
+    try:
+        n = float(n or 0)
+    except (TypeError, ValueError):
+        return "未知"
+    if n < 1024:
+        return "%d B" % int(n)
+    for unit in ("KB", "MB", "GB", "TB"):
+        n /= 1024.0
+        if n < 1024 or unit == "TB":
+            return "%.1f %s" % (n, unit)
+    return "%.1f TB" % n
+
+
+def _work_root(prefer_path: str = "") -> str:
+    """选择并**实测可写**的临时工作目录（优先与产物同盘，避免 /tmp 写满）。"""
+    cands = []
+    cfg_dir = (getattr(config, "FULL_INSTANCE_WORK_DIR", "")
+               or os.environ.get("BP_WORK_DIR", "") or "").strip()
+    if cfg_dir:
+        cands.append(cfg_dir)
+    if prefer_path:
+        base = prefer_path if os.path.isdir(prefer_path) else (
+            os.path.dirname(prefer_path) or "/")
+        cands.append(os.path.join(base, ".bp_work"))
+    cands.append(tempfile.gettempdir())
+    errs = []
+    for c in cands:
+        try:
+            os.makedirs(c, exist_ok=True)
+            probe = os.path.join(c, ".bp_write_probe")
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.unlink(probe)
+            return c
+        except Exception as e:
+            errs.append("%s（%s）" % (c, str(e) or type(e).__name__))
+    raise RuntimeError("没有可用的临时工作目录：%s" % "；".join(errs))
+
+
+def disk_free(path: str) -> int:
+    """path 所在分区的可用字节数（真实 statvfs 数据；取不到返回 -1）。"""
+    d = path
+    while d and not os.path.exists(d):
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
+    try:
+        return shutil.disk_usage(d or ".").free
+    except OSError:
+        return -1
+
+
+_ENOSPC_MARKS = ("errno 28", "no space left", "disk full", "enospc",
+                 "quota exceeded", "not enough space")
+
+
+def is_enospc(text) -> bool:
+    """识别"磁盘写满"类错误（不同工具措辞不同，统一判定）。"""
+    t = str(text or "").lower()
+    return any(m in t for m in _ENOSPC_MARKS)
+
+
+def _key_line(err) -> str:
+    """从 stderr 里挑出**真正说明问题**的那一行。
+
+    mysqldump 会先打一堆无关警告（如 "column statistics not supported"），
+    直接截断前 200 字符会把警告当原因展示，反而盖住关键信息。
+    """
+    lines = [ln.strip() for ln in str(err or "").splitlines() if ln.strip()]
+    for ln in lines:
+        if is_enospc(ln):
+            return ln
+    return lines[-1] if lines else ""
+
+
+def _space_hint(err, *paths) -> str:
+    """ENOSPC 的真实诊断：哪个路径、各自可用空间、关键错误、怎么处置。"""
+    ps = [p for p in paths if p]
+    where = "；".join("%s 当前可用 %s" % (p, human_size(disk_free(p))) for p in ps)
+    return ("磁盘空间不足（ENOSPC：写入时设备已满）%s。关键错误: %s。"
+            "处置：清理对应分区 / 把任务「产物根目录」改到空间充足的分区 / "
+            "用环境变量 BP_WORK_DIR 指定更大的临时工作目录"
+            % (("；" + where) if where else "",
+               _key_line(err) or "命令未输出 stderr"))
+
+
+# InnoDB **物理文件大小**查询：按版本兼容顺序尝试（查不到就跳过，不影响主流程）。
+# 为什么需要它：information_schema.tables 的 DATA_LENGTH 是 InnoDB 的**采样统计**，
+# 新建/大量写入后未必刷新（实测刚灌 4MB 的表只报 16KB），据此做空间预检会严重
+# 低估，等于让"备份前拦截"形同虚设。表空间文件大小是磁盘上的真实占用，可信得多。
+# MySQL 5.6/5.7/MariaDB 10.x 用 INNODB_SYS_TABLESPACES，MySQL 8.0+ 改名为
+# INNODB_TABLESPACES（旧名已移除），两个都试，谁返回结果用谁。
+_PHYSICAL_SIZE_SQLS = (
+    "SELECT LEFT(NAME, LOCATE('/', NAME) - 1), SUM(FILE_SIZE) "
+    "FROM information_schema.innodb_tablespaces "
+    "WHERE LOCATE('/', NAME) > 1 GROUP BY 1",
+    "SELECT LEFT(NAME, LOCATE('/', NAME) - 1), SUM(FILE_SIZE) "
+    "FROM information_schema.innodb_sys_tablespaces "
+    "WHERE LOCATE('/', NAME) > 1 GROUP BY 1",
+)
+
+
+def _estimate_physical(db_type, *, query_tool, host, port, user, env) -> dict:
+    """返回 {schema: 物理占用字节}（MySQL 系专用，取不到返回 {}）。"""
+    if db_type in PG_FAMILY:
+        return {}
+    for sql in _PHYSICAL_SIZE_SQLS:
+        cmd = [query_tool, "--no-defaults", "-h", str(host), "-P", str(port),
+               "-u", user, "-N", "-B", "-e", sql]
+        rc, out, _err = _run(cmd, env, timeout=120)
+        if rc != 0 or not out or not out.strip():
+            continue
+        got = {}
+        for line in out.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 2:
+                continue
+            try:
+                got[parts[0].strip()] = max(
+                    got.get(parts[0].strip(), 0), int(float(parts[1] or 0)))
+            except (ValueError, TypeError):
+                continue
+        if got:
+            return got
+    return {}
+
+
+def estimate_instance_bytes(db_type: str, *, query_tool, host, port, user, env,
+                            maint: str, dbs) -> int:
+    """估算本次要落盘的备份数据量（查询数据库自身，失败返回 -1）。
+
+    取值口径：**逻辑统计与物理占用逐库取大者**再求和。
+    - MySQL 系：information_schema.tables 的 DATA_LENGTH+INDEX_LENGTH（所有版本
+      都有，但是采样值可能滞后）VS InnoDB 表空间 FILE_SIZE（真实磁盘占用，
+      8.0 用 innodb_tablespaces、5.6/5.7 用 innodb_sys_tablespaces）；
+    - PG 系：pg_database_size()，本身就是磁盘真实大小。
+
+    估算值只用于**提前发现空间根本不够**，不当作精确值。
+    """
+    is_pg = db_type in PG_FAMILY
+    want = set(dbs or [])
+    if is_pg:
+        if not maint:
+            return -1
+        sql = ("SELECT datname, pg_database_size(datname) FROM pg_database "
+               "WHERE NOT datistemplate")
+        cmd = [query_tool, "-h", str(host), "-p", str(port), "-U", user,
+               "-d", maint, "-t", "-A", "-c", sql]
+    else:
+        sql = ("SELECT table_schema, SUM(data_length + index_length) "
+               "FROM information_schema.tables GROUP BY table_schema")
+        cmd = [query_tool, "--no-defaults", "-h", str(host), "-P", str(port),
+               "-u", user, "-N", "-B", "-e", sql]
+    rc, out, _err = _run(cmd, env, timeout=120)
+    if rc != 0 or not out:
+        return -1
+    logical = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("|") if is_pg else line.split("\t")
+        if len(parts) < 2:
+            continue
+        name, size = parts[0].strip(), parts[1].strip()
+        try:
+            n = int(float(size or 0))
+        except (ValueError, TypeError):
+            continue
+        logical[name] = max(logical.get(name, 0), n)
+
+    total = 0
+    physical = _estimate_physical(db_type, query_tool=query_tool, host=host,
+                                  port=port, user=user, env=env)
+    for name, n in logical.items():
+        if want and name not in want:
+            continue
+        total += max(n, physical.get(name, 0))
+    # 只存在于物理统计里的库（如逻辑统计尚未产生行时）也要计入
+    for name, n in physical.items():
+        if want and name not in want:
+            continue
+        if name not in logical:
+            total += n
+    return total
+
+
 def enumerate_databases(db_type: str, query_tool: str, host: str, port,
                         user: str, env: dict, include_system_dbs: bool = False):
     """枚举库清单，默认过滤系统库。返回 (命中的维护库, 库名列表, 最近错误)。
@@ -196,11 +401,41 @@ def backup_full_instance(db_type: str, *, host, port, user, password,
                     f"请检查连接信息")
         raise RuntimeError(f"无法在 {host}:{port} 枚举到可备份的数据库——{hint}")
 
-    work = tempfile.mkdtemp(prefix="bp_fullinst_")
+    # 工作目录默认与产物同盘：tempfile 默认的 /tmp 常是小分区/tmpfs，
+    # 逐库 dump 会把它写满（表现为 mysqldump "Got errno 28 on write"）。
+    work = tempfile.mkdtemp(prefix="bp_fullinst_", dir=_work_root(out_path))
     try:
         dbs_dir = os.path.join(work, "dbs")
         os.makedirs(dbs_dir)
-        for d in dbs:
+
+        # 空间预检查：用数据库自身统计估算本次落盘量（SQL 文本通常 ≥ 数据大小，
+        # 按 1.2 倍留余量），根本不够就**在备份前**失败——而不是跑到一半让
+        # mysqldump 扔出一个看不懂的 errno 28。
+        est = estimate_instance_bytes(
+            db_type, query_tool=query_tool, host=host, port=port, user=user,
+            env=env, maint=maint, dbs=dbs)
+        free = disk_free(work)
+        if est > 0 and free >= 0:
+            need = int(est * 1.2)
+            note = ("预计占用约 %s（数据库统计 %s × 1.2），临时工作目录 %s 可用 %s"
+                    % (human_size(need), human_size(est), work, human_size(free)))
+            if free < need:
+                raise RuntimeError(
+                    "磁盘空间不足，已在备份前终止：%s。请清理该分区，或把任务"
+                    "「产物根目录」改到空间充足的分区，也可用环境变量 BP_WORK_DIR "
+                    "指定更大的临时工作目录" % note)
+            logger.info("[full-instance] %s，空间预检查通过", note)
+        else:
+            logger.warning(
+                "[full-instance] 无法估算数据量（数据库统计查询未返回），跳过空间"
+                "预检查；临时工作目录 %s 当前可用 %s",
+                work, human_size(free) if free >= 0 else "未知")
+        # 第二道空间防线：估算可能得不到（统计查不到/ PG 某些版本），此时靠
+        # "每 dump 完一个库就看一眼余量"兜底——下一个库大概率还需要同样量级的
+        # 空间，若连上一个库的两倍都放不下，就在**这里**停，而不是跑到最后
+        # 一个库写满设备才失败（用户现场就是跑了几分钟才炸）。
+        prev_size = 0
+        for idx, d in enumerate(dbs, 1):
             if is_pg:
                 rc, _o, err = _run([
                     dump_tool, "-h", str(host), "-p", str(port), "-U", user,
@@ -216,7 +451,33 @@ def backup_full_instance(db_type: str, *, host, port, user, password,
                 rc, _o, err = _mysqldump_to_file(
                     cmd, env, os.path.join(dbs_dir, f"{d}.sql"))
             if rc != 0:
-                raise RuntimeError(f"库 {d} dump 失败(rc={rc}): {err[:300]}")
+                # errno 28 = ENOSPC：给出"写哪个路径满了、还剩多少"的真实诊断，
+                # 而不是把裸错误原样丢给用户
+                if is_enospc(err):
+                    raise RuntimeError(
+                        "库 %s dump 失败：%s" % (d, _space_hint(err, work, out_path)))
+                raise RuntimeError(
+                    "库 %s dump 失败(rc=%s): %s"
+                    % (d, rc, (err or "").strip()[:300] or "命令未输出 stderr（请检查该库的读取权限与磁盘）"))
+
+            try:
+                size = os.path.getsize(os.path.join(
+                    dbs_dir, f"{d}.dump" if is_pg else f"{d}.sql"))
+            except OSError:
+                size = 0
+            free_now = disk_free(work)
+            floor = max(prev_size, size) * 2
+            if prev_size and size and free_now >= 0 and free_now < floor:
+                raise RuntimeError(
+                    "磁盘空间不足，已在第 %d/%d 个库（%s）后提前终止，避免产出残缺备份："
+                    "已完成 %s；临时工作目录 %s 剩余 %s，不足以容纳下一个库"
+                    "（上一个库 dump %s，按 2 倍预留需 %s）。"
+                    "处置：清理该分区 / 把任务「产物根目录」改到空间充足的分区 / "
+                    "用环境变量 BP_WORK_DIR 指定更大的临时工作目录"
+                    % (idx, len(dbs), d, "、".join(dbs[:idx]), work,
+                       human_size(free_now), human_size(max(prev_size, size)),
+                       human_size(floor)))
+            prev_size = max(prev_size, size)
 
         globals_status = "na"
         globals_path = ""
@@ -252,6 +513,12 @@ def backup_full_instance(db_type: str, *, host, port, user, password,
             if globals_path and os.path.exists(globals_path):
                 tf.add(globals_path, arcname="globals.sql")
         return manifest
+    except OSError as e:
+        # 打 tar.gz 阶段同样会被写满（产物目录分区不足），单独识别并说清楚
+        if is_enospc(e):
+            raise RuntimeError("打包产物失败：%s"
+                               % _space_hint(e, os.path.dirname(out_path) or ".", work))
+        raise
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -271,7 +538,9 @@ def restore_full_instance(db_type: str, *, host, port, user, password,
         raise RuntimeError(
             f"本机未找到 SQL 客户端（{cfg['default_query']}），无法执行全实例恢复")
 
-    work = tempfile.mkdtemp(prefix="bp_restore_")
+    # 解包也要占用与归档相当的磁盘，同样放到归档所在分区（避免 /tmp 写满）
+    work = tempfile.mkdtemp(prefix="bp_restore_",
+                            dir=_work_root(os.path.dirname(backup_path) or ""))
     try:
         with tarfile.open(backup_path, "r:gz") as tf:
             tf.extractall(work)
