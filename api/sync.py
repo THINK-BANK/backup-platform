@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 
 from auth import login_required
 from core import models, scheduler
+from api import contract
 from core.sync.engine import (
     generate_flink_config,
     list_sync_columns,
@@ -24,8 +25,13 @@ sync_bp = Blueprint("sync", __name__)
 @sync_bp.route("/sync-tasks", methods=["GET"])
 @login_required
 def list_tasks():
+    """列出数据同步任务（分页见 docs/api_conventions.md §2）。"""
     rows = models.list_sync_tasks()
-    return jsonify({"success": True, "data": rows})
+    default_size = 100 if request.path.startswith(contract.V1_PREFIX) else len(rows) or 1
+    _page, size, offset = contract.pagination_args(default_size=default_size,
+                                                   max_size=1000)
+    return contract.list_response(rows[offset:offset + size], total=len(rows),
+                                  legacy={"success": True, "data": rows})
 
 
 @sync_bp.route("/sync-tasks", methods=["POST"])
@@ -57,6 +63,21 @@ def create_task():
              "batch_size", "error_threshold", "enabled", "realtime_enabled",
              "full_db_migrate", "validate_before_run", "verify_after_run"}
     unknown = [k for k in data.keys() if k not in known]
+    # 类型校验：必须是同步插件注册表里的库型（前端下拉也只给这些），
+    # 否则任务建出来一跑就失败，且错误信息离根因很远。
+    try:
+        from core.sync.plugins import registry
+        supported = registry.available()
+    except Exception:  # noqa: BLE001
+        supported = []
+    if supported:
+        for side, label in (("src_db_type", "源"), ("tgt_db_type", "目标")):
+            t = str(data.get(side) or "").strip().lower()
+            if t not in supported:
+                return jsonify({
+                    "success": False,
+                    "message": f"{label}端数据库类型 {t} 不支持同步"
+                               f"（已支持: {', '.join(supported)}）"}), 400
     payload = _prepare_payload(data)
     payload["status"] = "never"
     payload["last_status"] = "never"

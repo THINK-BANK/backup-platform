@@ -7,8 +7,17 @@ from urllib.parse import urlparse
 
 api_bp = Blueprint("api", __name__, url_prefix="/api")
 
+from . import contract  # noqa: E402  统一契约（错误码/分页/版本头）
+
 # 公开端点白名单（匿名可访问；当前除登录页外均为受保护 API）
 PUBLIC_API_PATHS = {"/api/meta", "/api/health"}
+
+
+def _is_public_path(path: str) -> bool:
+    """公开端点判定：/api/v1 与 /api 前缀视为同一端点。"""
+    if path.startswith(contract.V1_PREFIX):
+        path = contract.LEGACY_PREFIX + path[len(contract.V1_PREFIX):]
+    return path in PUBLIC_API_PATHS
 
 
 @api_bp.before_request
@@ -27,7 +36,7 @@ def _api_security_gate():
     token_auth = False
     if "user" not in session:
         token = _extract_bearer_token()
-        if request.path not in PUBLIC_API_PATHS:
+        if not _is_public_path(request.path):
             if not token or not _valid_api_token(token):
                 return jsonify({"success": False,
                                 "error": "未登录或会话已过期（外部调用请携带 "
@@ -68,4 +77,9 @@ from . import (tasks, records, restore, system, hosts, sync, inspection, deploy,
                 restore_extras_api, drills, storage, policy, lifecycle, migration,
                 clone, itsm, link, ai_alert, datamining, ai_agent, rt, plugins,
                 restore_verify, synthesize, dedup, jdbc, data_compare,
-                tape, logs, db_adapters, rbac, cdc, vm)  # noqa: E402,F401
+                tape, logs, db_adapters, rbac, cdc, vm, openapi,
+                agentless, object_storage)  # noqa: E402,F401
+
+# 统一契约钩子（三段式错误体 + 版本/弃用响应头）。必须在 app.register_blueprint
+# 之前声明：Flask 在注册蓝图时冻结其请求钩子列表。
+contract.register(api_bp)

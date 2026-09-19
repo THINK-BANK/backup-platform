@@ -14,16 +14,45 @@ import config
 from . import api_bp
 
 
-@api_bp.route("/meta", methods=["GET"])
-@login_required
-def meta():
+def _sync_types() -> list:
+    """同步/迁移插件注册表里的库型（注册即出现，无需改前端）。"""
+    try:
+        from core.sync.plugins import registry
+        return registry.available()
+    except Exception:  # noqa: BLE001 - 注册表异常不该让整个 META 挂掉
+        return []
+
+
+def build_meta() -> dict:
+    """构建 META 元信息（``GET /api/meta`` 与页面首屏注入共用同一份）。
+
+    抽出来的原因：前端多个页面的「数据库类型下拉」都依赖
+    ``BKP.META.db_types``，而它原先只在 ``app.js`` 的 DOMContentLoaded 里
+    ``await /api/meta`` 之后才被填充——比它更早执行的页面脚本（sync.js）
+    拿到的是空数组，表现为类型下拉一片空白。现在由模板渲染时直接注入
+    （见 app.py 的 context_processor + base.html 的 window.__BKP_META__），
+    首屏即有数据；接口仍保留给登录后刷新等场景，两边共用本函数避免漂移。
+    """
     # 把 config.DEFAULT_PORTS 与适配器声明的 default_port 合并
     default_ports = dict(config.DEFAULT_PORTS or {})
     for t, info in engine_meta_map().items():
         if info.get("default_port") and t not in default_ports:
             default_ports[t] = info["default_port"]
-    return jsonify({
+    return {
+        "platform": {"name": config.PLATFORM_NAME,
+                     "version": config.PLATFORM_VERSION},
+        # API 契约信息：规范路径 /api/v1，旧 /api 保留为兼容（弃用）路径
+        "api": {"version": "v1",
+                "canonical_prefix": "/api/v1",
+                "deprecated_prefix": "/api",
+                "spec": "/api/v1/openapi.json",
+                "docs": "/api/docs",
+                "error_contract": ["code", "message", "details"]},
         "db_types": supported_types(),
+        # 可迁移/可同步的库型（= 同步插件注册表，供数据迁移页与数据同步页的
+        # 类型下拉使用）；与 db_types（备份引擎全集，含 file 等非数据库类型）
+        # 区分开，避免下拉里出现选不动的类型或漏掉已支持的类型。
+        "sync_types": _sync_types(),
         "display_names": ENGINE_DISPLAY,
         "db_type_meta": engine_meta_map(),
         "default_ports": default_ports,
@@ -33,7 +62,13 @@ def meta():
             "logical": "逻辑备份（mysqldump / pg_dump / expdp）",
             "physical": "物理备份（XtraBackup / pg_basebackup / RMAN）",
         },
-    })
+    }
+
+
+@api_bp.route("/meta", methods=["GET"])
+@login_required
+def meta():
+    return jsonify(build_meta())
 
 
 @api_bp.route("/dashboard", methods=["GET"])

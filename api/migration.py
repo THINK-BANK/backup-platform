@@ -16,13 +16,17 @@ _engine = migration_mod.migration_engine
 _VALID_STAGES = ("pre", "mid", "post")
 
 
+# 规范资源名：/migration-protection-plans（迁移保护计划）；
+# /migration 为历史名称，保留为别名（见 docs/api_conventions.md §1）。
 @api_bp.route("/migration", methods=["GET"])
+@api_bp.route("/migration-protection-plans", methods=["GET"])
 @login_required
 def api_list_migrations():
     return jsonify(_engine.list_plans())
 
 
 @api_bp.route("/migration", methods=["POST"])
+@api_bp.route("/migration-protection-plans", methods=["POST"])
 @login_required
 def api_create_migration():
     data = request.get_json(silent=True) or {}
@@ -67,6 +71,7 @@ def api_get_migration(plan_id):
 
 
 @api_bp.route("/migration/<int:plan_id>/verify", methods=["POST"])
+@api_bp.route("/migration-protection-plans/<int:plan_id>/verify", methods=["POST"])
 @login_required
 def api_verify_migration(plan_id):
     plan = _engine.get_plan(plan_id)
@@ -84,7 +89,10 @@ from core import db_migrate as _db_migrate_mod
 _migrate_engine = _db_migrate_mod.engine
 
 
+# 规范资源名：/migration-plans（一站式迁移计划，DTS 对标）；
+# /db-migrate 为历史名称，保留为别名（见 docs/api_conventions.md §1）。
 @api_bp.route("/db-migrate", methods=["GET"])
+@api_bp.route("/migration-plans", methods=["GET"])
 @login_required
 def api_list_db_migrate():
     return jsonify(_migrate_engine.list_plans())
@@ -106,6 +114,7 @@ def api_create_db_migrate():
 
 
 @api_bp.route("/db-migrate/<int:plan_id>", methods=["GET"])
+@api_bp.route("/migration-plans/<int:plan_id>", methods=["GET"])
 @login_required
 def api_get_db_migrate(plan_id):
     plan = _migrate_engine.get_plan(plan_id)
@@ -125,6 +134,7 @@ def api_delete_db_migrate(plan_id):
 
 
 @api_bp.route("/db-migrate/<int:plan_id>/run", methods=["POST"])
+@api_bp.route("/migration-plans/<int:plan_id>/run", methods=["POST"])
 @login_required
 def api_run_db_migrate(plan_id):
     try:

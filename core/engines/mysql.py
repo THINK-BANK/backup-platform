@@ -227,6 +227,28 @@ class MySQLEngine(BackupEngine):
         except Exception:
             return ""
 
+    def _remote_server_version(self, client) -> str:
+        """经 SSH 读取目标端服务端版本字符串（如 ``10.11.6-MariaDB``）。
+
+        只读且不落地任何东西：直接问目标端已存在的服务二进制要版本号。
+        """
+        from core import remote_dump                            # noqa: F401
+        from core.engines.file import _ssh_exec_pipe as _sep
+        cmd = ("for b in mariadbd mysqld mariadbd-safe mysqld-debug; do "
+               "p=$(command -v $b 2>/dev/null) && { $p --version 2>/dev/null | "
+               "head -1; break; }; done")
+        try:
+            out, _err, _rc = _sep(client, remote_dump._wrap_login(cmd), timeout=30)
+            text = out.decode("utf-8", "replace") if isinstance(out, bytes) else str(out or "")
+            return text.strip()
+        except Exception as e:  # noqa: BLE001 - 探测失败只影响工具选型，不能中断备份
+            try:
+                self.logger.warning("[%s] 远程读取服务端版本失败: %s",
+                                    self.task_name, str(e)[:160])
+            except Exception:
+                pass
+            return ""
+
     @staticmethod
     def _pick_physical_bin(server_version: str) -> tuple:
         """按服务器版本选择平台侧物理备份二进制，返回 (path, label)。
@@ -642,7 +664,12 @@ class MySQLEngine(BackupEngine):
             # 远端零安装原则：优先使用数据库服务器自带的 xtrabackup/mariabackup；
             # 找不到则从平台推送对应版本二进制到 /tmp 临时执行（结束即清理），
             # 数据库服务器上不安装、不落地任何备份工具。
-            server_ver = self._server_version_str() if not reuse else ""
+            # 版本必须**经 SSH 在目标端**取：生产库通常不向备份平台开放 3306，
+            # 平台侧直连拿不到版本时会退化为默认值 8.0，进而把 MySQL 8 的
+            # xtrabackup 推给 MariaDB（实测 rc=1）。修成本:先远程探服务进程。
+            server_ver = "" if reuse else self._remote_server_version(client)
+            if not reuse and not server_ver:
+                server_ver = self._server_version_str()
             tool = "" if reuse else remote_dump._resolve_remote_bin(client, "xtrabackup")
             if not reuse and not tool:
                 tool = remote_dump._resolve_remote_bin(client, "mariabackup")
@@ -761,6 +788,9 @@ class MySQLEngine(BackupEngine):
             try:
                 _ssh_exec_pipe(client, remote_dump._wrap_login(
                     f"rm -rf {remote_tmp} {remote_tar}"), timeout=60)
+                # 产物已清空后再回收平台自己创建的空目录（/tmp/bk_stage 系列），
+                # 只删空目录，保证目标端最终零残留
+                remote_dump.cleanup_remote_stage_dirs(client, remote_tar, remote_tmp)
             except Exception:
                 pass
 
@@ -787,6 +817,9 @@ class MySQLEngine(BackupEngine):
                               f"{remote_dump.marker_path(remote_tmp, True)} "
                               f"{pushed_bin or ''} {pushed_libs_dir or ''}")
                 _sep(client, remote_dump._wrap_login(f"rm -rf {to_del}"), timeout=60)
+                # 同上：把平台自己 mkdir 出来的空目录也回收掉
+                remote_dump.cleanup_remote_stage_dirs(
+                    client, remote_tar, remote_tmp)
             except Exception:
                 pass
             try:

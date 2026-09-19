@@ -689,6 +689,34 @@ def _resolve_mysql_dump_bin(client, task: dict, remote_cnf: str) -> str:
     return mysqldump_bin
 
 
+def _remote_server_flavor(client, task: dict, mysqldump_bin: str,
+                          remote_cnf: str) -> str:
+    """问目标端真实 DBMS 风味：``"mariadb"`` / ``"mysql"`` / ``""``（探测失败）。
+
+    为什么不能信任务的 ``db_type``：客户常把 MariaDB 实例登记成 ``mysql``
+    （反之亦然）。``--set-gtid-purged`` 只有 MySQL/Percona 的 mysqldump 认，
+    一旦按错误风味拼参，MariaDB 目标会 100% 报
+    ``unknown variable 'set-gtid-purged=OFF'``（rc=7）直接失败。
+    """
+    try:
+        from core.engines.file import _ssh_exec_pipe as _sep
+        cli = shlex.quote(os.path.dirname(mysqldump_bin) + "/mysql")
+        port = int(task.get("port") or 3306)
+        o, _e, _rc = _sep(
+            client,
+            _wrap_login(f"{cli} --defaults-file={shlex.quote(remote_cnf)} "
+                        f"-h 127.0.0.1 -P {port} -N -e \"SELECT VERSION();\" "
+                        f"2>/dev/null"), timeout=30)
+        txt = o.decode("utf-8", "replace") if isinstance(o, bytes) else str(o or "")
+        lines = [x.strip() for x in txt.strip().splitlines() if x.strip()]
+        ver = lines[-1] if lines else ""
+        if not ver:
+            return ""
+        return "mariadb" if "mariadb" in ver.lower() else "mysql"
+    except Exception:  # noqa: BLE001 - 探测失败时按调用方的判断继续，不阻断备份
+        return ""
+
+
 def _build_mysql_dump_shell(client, task: dict, ssh_host: dict, mysqldump_bin: str,
                             remote_cnf: str, compress: int, extra_args: str = "") -> dict:
     """只负责「组装 mysqldump 命令行」，不负责执行。
@@ -708,6 +736,17 @@ def _build_mysql_dump_shell(client, task: dict, ssh_host: dict, mysqldump_bin: s
     db_name = task.get("db_name") or ""
     port = task.get("port") or 3306
     extra = task_extra_dict(task)
+    # 按**目标端真实风味**纠偏参数：任务登记成 mysql 但实例其实是 MariaDB 时，
+    # 这里必须剔掉 MariaDB 的 mysqldump 不认识的参数，否则 rc=7 必失败。
+    flavor = _remote_server_flavor(client, task, mysqldump_bin, remote_cnf)
+    if flavor == "mariadb" and "--set-gtid-purged" in (extra_args or ""):
+        extra_args = " ".join(
+            a for a in (extra_args or "").split()
+            if not a.startswith("--set-gtid-purged"))
+        logging.getLogger(__name__).warning(
+            "[remote_dump] 任务登记的风味是 %s，但目标端实测为 MariaDB：已剔除 "
+            "MariaDB 的 mysqldump 不支持的参数（--set-gtid-purged）",
+            task.get("db_type") or "mysql")
     tables = [str(t).strip() for t in (extra.get("tables") or []) if str(t).strip()]
     schemas = [str(s).strip() for s in (extra.get("schemas") or []) if str(s).strip()]
     schema_only = bool(extra.get("schema_only"))
@@ -1412,6 +1451,53 @@ def _remote_stage_dir() -> str:
     return getattr(config, "BACKUP_REMOTE_STAGE", "/tmp/bk_stage")
 
 
+def cleanup_remote_stage_dirs(client, *paths, timeout: int = 40) -> None:
+    """回收平台自己在远端 mkdir 出来的暂存目录（**只删空目录**）。
+
+    背景：产物拉回后我们会 ``rm -rf`` 掉产物本身，但 ``/tmp/bk_stage`` 这类由平台
+    创建的目录会留下空壳。它虽然不占空间，却与「目标端零残留」的承诺不符，也会被
+    ``core.agentless.audit`` 的 A2 分节如实判为 WARN。
+
+    刻意用 ``rmdir`` 而非 ``rm -rf``：只要目录里还有本平台其他任务的产物、
+    **或客户自己的任何东西**，系统就会拒绝删除（Directory not empty），
+    因此不会误删，也不需要为并发加锁。
+    """
+    from core.engines.file import _ssh_exec_pipe as _pipe   # 局部导入避免循环依赖
+
+    log = logging.getLogger(__name__)
+    for d in _stage_dir_candidates(paths):
+        try:
+            _out, err, rc = _pipe(client, _wrap_login(
+                "rmdir %s" % shlex.quote(d)), timeout=timeout)
+            err = (err or "").strip() if isinstance(err, str) else \
+                (err.decode("utf-8", "replace").strip() if err else "")
+            log.info("[remote_dump] 回收远端空目录 %s: %s",
+                     d, "已回收" if rc == 0 else "保留（%s）" % (err[:120] or rc))
+        except Exception as e:  # noqa: BLE001 - best-effort，失败不影响备份结果
+            log.warning("[remote_dump] 回收远端空目录 %s 异常: %s", d, str(e)[:120])
+
+
+def _stage_dir_candidates(paths) -> list[str]:
+    """把产物路径展开成"平台自己创建的那几层目录"，从深到浅去重。
+
+    **绝不越过根级目录**：像 ``/tmp``、``/var`` 这类由操作系统/客户使用的目录，
+    一律不作为候选（早期实现曾一路展开到 ``/tmp`` 本身并在其为空时被 rmdir 掉，
+    ——已修。这里的要求是：宁可留一个空目录，也不能碰别人的目录。
+    """
+    out: list[str] = []
+    for raw in paths or ():
+        cur = str(raw or "").rstrip("/")
+        cur = cur.rsplit("/", 1)[0] if "/" in cur else ""   # 产物本身是文件，只要它的上级目录
+        while cur:
+            parent = cur.rsplit("/", 1)[0]
+            if (not parent) or parent == "/" or cur.count("/") < 2:
+                break
+            if cur not in out:
+                out.append(cur)
+            cur = parent
+    return out
+
+
 def _resume_part_path(final_path: str, task: dict, db_type: str, key: str = "") -> str:
     """本地半成品路径：**与时间戳无关**，否则重试换了产物名就命中不了断点。
 
@@ -1470,15 +1556,50 @@ def _meta_usable(meta: dict, ssh_host: dict, spec: dict, p: dict) -> bool:
     return age <= float(p.get("resume_ttl") or 43200)
 
 
+def _remote_breakpoint_alive(sftp, meta: dict) -> bool:
+    """远端断点是否还活着：`.part` 存在且长度不小于本地已传偏移。
+
+    被判死的典型场景：客户清了 /tmp、目标机重启、或上一次断点被外部/上一次失败
+    清理过，而本地 meta 还在（且在 TTL 内）。此时若照旧走「续传」，就会一直等一个
+    永远不会出现的产物，每次都超时失败——实测线上任务连续多轮失败且报错里的
+    remote_path 始终是同一个远古 tag。这种情况必须作废断点、重新导出。
+    """
+    rp = meta.get("remote_path")
+    if not rp:
+        return False
+    try:
+        st = sftp.stat(rp)
+        rsize = int(st.st_size or 0)
+    except Exception:  # noqa: BLE001 - 取不到 = 远端产物已不存在
+        return False
+    try:
+        offset = int(meta.get("offset") or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    if offset and rsize < offset:      # 远端产物比已传的还短 → 被截断/重建过
+        return False
+    return True
+
+
 def _cleanup_remote(sftp, meta: dict) -> None:
-    """清理远端暂存产物（成功/断点作废时；best-effort，失败不影响主流程）。"""
-    for key in ("remote_path", "rc_path", "err_path", "sh_path"):
-        path = meta.get(key)
+    """清理远端暂存产物（成功/断点作废时；best-effort，失败不影响主流程）。
+
+    除了产物自身，还会顺带回收平台**自己创建的**那几层暂存目录
+    （``/tmp/bk_stage/fixed`` 之类）：只回收已经变成空目录的层，里面只要还有
+    任何东西（客户的、其他任务的、未完成的续传分片）系统都会拒绝删除。
+    """
+    paths = [meta.get(k) for k in ("remote_path", "rc_path", "err_path", "sh_path")]
+    for path in paths:
         if not path:
             continue
         try:
             sftp.remove(path)
-        except Exception:
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+    for d in _stage_dir_candidates(paths):
+        try:
+            sftp.rmdir(d)
+        except Exception:  # noqa: BLE001 - 非空目录会失败，正是我们要的保护
             pass
 
 
@@ -2021,6 +2142,17 @@ def _remote_mysql_dump_to_file(task: dict, ssh_host: dict, final_path: str,
                     "sha256": db.sha256_file(final_path), "resumed": False}
 
         stage = _remote_stage_dir()
+        if meta and _meta_usable(meta, ssh_host, spec, p) \
+                and not _remote_breakpoint_alive(sftp, meta):
+            # 断点还"在 TTL 内"，但远端产物已经不存在（客户清过 /tmp、目标机重启、
+            # 或上次失败后清理过）→ 不作废就会每轮都傻等超时。
+            logging.getLogger(__name__).warning(
+                "[remote_dump] 远端断点 %s 已失效（产物不存在或被截断），"
+                "作废并重新导出", meta.get("remote_path"))
+            _cleanup_remote(sftp, meta)
+            _meta_drop(part_path)
+            meta = {}
+
         if meta and _meta_usable(meta, ssh_host, spec, p):
             resumed = True
             logging.getLogger(__name__).info(
@@ -2063,6 +2195,12 @@ def _remote_mysql_dump_to_file(task: dict, ssh_host: dict, final_path: str,
 
         ready, rc = _remote_rc_ready(sftp, meta["rc_path"])
         if ready and rc != 0:
+            # 导出进程已终止（而非被中断）：这次没有可续传的余地，必须当场清掉
+            # 远端暂存，否则 .part/.rc/.err/.sh 会一直躺在客户机器上。
+            # 真实例：task=27 mysqldump 报 unknown variable 'set-gtid-purged=OFF'，
+            # 失败退出后目标端残留了整套 bk_dump_* 文件。
+            _cleanup_remote(sftp, meta)
+            _meta_drop(part_path)
             raise RuntimeError(
                 f"远程 mysqldump 失败(rc={rc}, bin={mysqldump_bin}): "
                 f"{_sftp_read_tail(sftp, meta['err_path'])}")
@@ -2070,6 +2208,8 @@ def _remote_mysql_dump_to_file(task: dict, ssh_host: dict, final_path: str,
             raise RuntimeError("远端导出未正常结束（无完成标记），断点已保留，重试将自动续传")
         rsize = int(sftp.stat(meta["remote_path"]).st_size)
         if spec["enable"] and rsize <= 20:
+            _cleanup_remote(sftp, meta)
+            _meta_drop(part_path)
             raise RuntimeError(
                 f"远程 mysqldump 疑似失败：压缩后仅 {rsize} 字节"
                 f"（stderr: {_sftp_read_tail(sftp, meta['err_path'], 200)}）")

@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+{% block title %}API 文档 · AIDBM{% endblock %}
+{% block content %}
+<div class="toolbar">
+  <div>
+    <div class="page-title">API 接口文档</div>
+    <div class="page-sub">
+      规范前缀 <code>/api/v1</code> · 旧前缀 <code>/api</code> 为兼容路径（响应带 Deprecation 头）
+      · 错误体统一 <code>{code, message, details}</code>
+    </div>
+  </div>
+  <div>
+    <a class="btn btn-outline-secondary btn-sm" id="rawSpec" href="{{ spec_url }}">
+      <i class="bi bi-filetype-json"></i> OpenAPI JSON
+    </a>
+    <button class="btn btn-outline-primary btn-sm" onclick="loadSpec()">
+      <i class="bi bi-arrow-clockwise"></i> 刷新
+    </button>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-md-3"><div class="card p-3"><div class="text-muted small">接口路径</div>
+    <div class="fs-4" id="statPaths">-</div></div></div>
+  <div class="col-md-3"><div class="card p-3"><div class="text-muted small">接口操作（方法×路径）</div>
+    <div class="fs-4" id="statOps">-</div></div></div>
+  <div class="col-md-3"><div class="card p-3"><div class="text-muted small">资源分组</div>
+    <div class="fs-4" id="statTags">-</div></div></div>
+  <div class="col-md-3"><div class="card p-3"><div class="text-muted small">业务错误码</div>
+    <div class="fs-4" id="statCodes">-</div></div></div>
+</div>
+
+<div class="card p-3 mb-3">
+  <div class="row g-2 align-items-center">
+    <div class="col-md-5">
+      <input type="text" class="form-control form-control-sm" id="apiSearch"
+             placeholder="搜索路径 / 摘要（如 records、备份、sync）">
+    </div>
+    <div class="col-md-7 text-end">
+      <span class="badge text-bg-light" id="hitInfo">-</span>
+    </div>
+  </div>
+</div>
+
+<div id="conventions" class="card p-3 mb-3 d-none">
+  <div class="fw-semibold mb-2"><i class="bi bi-rulers"></i> 契约约定</div>
+  <div class="small" id="convBody"></div>
+</div>
+
+<div id="apiList"></div>
+
+<div class="card p-3 mt-3">
+  <div class="fw-semibold mb-2"><i class="bi bi-exclamation-octagon"></i> 业务错误码表</div>
+  <div class="table-responsive" style="max-height:340px;overflow:auto">
+    <table class="table table-sm align-middle mb-0">
+      <thead><tr><th>错误码</th><th>名称</th><th>HTTP</th><th>默认原因</th></tr></thead>
+      <tbody id="codeBody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SPEC_URL = {{ spec_url|tojson }};
+let SPEC = null;
+
+const METHOD_CLASS = {get:'text-bg-primary', post:'text-bg-success', put:'text-bg-warning',
+                      patch:'text-bg-info', delete:'text-bg-danger'};
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function loadSpec(){
+  const list = document.getElementById('apiList');
+  list.innerHTML = '<div class="text-muted p-3">加载中…</div>';
+  try {
+    const r = await fetch(SPEC_URL, {credentials:'same-origin'});
+    if(!r.ok) throw new Error('HTTP ' + r.status);
+    SPEC = await r.json();
+  } catch(e) {
+    list.innerHTML = '<div class="alert alert-danger">规范加载失败：' + esc(e.message) + '</div>';
+    return;
+  }
+  renderStats(); renderConventions(); renderList(''); renderCodes();
+}
+
+function renderStats(){
+  const paths = Object.keys(SPEC.paths || {});
+  let ops = 0; const tags = new Set();
+  paths.forEach(p => Object.keys(SPEC.paths[p]).forEach(m => {
+    ops++; (SPEC.paths[p][m].tags || []).forEach(t => tags.add(t)); }));
+  document.getElementById('statPaths').textContent = paths.length;
+  document.getElementById('statOps').textContent = ops;
+  document.getElementById('statTags').textContent = tags.size;
+  document.getElementById('statCodes').textContent = (SPEC['x-error-codes'] || []).length;
+}
+
+function renderConventions(){
+  const c = SPEC['x-conventions'] || {};
+  const pg = c.pagination || {};
+  const rows = [
+    ['分页（规范）', (pg.canonical || []).join(' / ')],
+    ['分页（兼容）', (pg.compatible || []).join(' / ')],
+    ['分页响应字段', (pg.response_keys || []).join(', ')],
+    ['命名规范', c.naming || '-'],
+    ['版本与弃用', c.deprecation || '-'],
+  ];
+  document.getElementById('convBody').innerHTML = rows.map(
+    r => '<div class="row g-1 mb-1"><div class="col-md-2 text-muted">' + esc(r[0]) +
+         '</div><div class="col-md-10">' + esc(r[1]) + '</div></div>').join('');
+  document.getElementById('conventions').classList.remove('d-none');
+}
+
+function renderList(kw){
+  kw = (kw || '').trim().toLowerCase();
+  const paths = Object.keys(SPEC.paths || {}).sort();
+  let hits = 0;
+  const groups = {};
+  paths.forEach(p => {
+    Object.keys(SPEC.paths[p]).forEach(m => {
+      const op = SPEC.paths[p][m];
+      const text = (p + ' ' + (op.summary || '')).toLowerCase();
+      if(kw && text.indexOf(kw) < 0) return;
+      hits++;
+      (op.tags || ['other']).forEach(t => {
+        (groups[t] = groups[t] || []).push({p, m, op});
+      });
+    });
+  });
+  const tagNames = Object.keys(groups).sort();
+  const html = tagNames.map(t => {
+    const items = groups[t].map(it => opCard(it.p, it.m, it.op)).join('');
+    return '<div class="card p-3 mb-3"><div class="fw-semibold mb-2">' +
+      '<i class="bi bi-folder2"></i> ' + esc(t) + ' <span class="text-muted small">(' +
+      groups[t].length + ')</span></div>' + items + '</div>';
+  }).join('');
+  document.getElementById('apiList').innerHTML =
+    html || '<div class="card p-3 text-muted">无匹配接口</div>';
+  document.getElementById('hitInfo').textContent = '命中 ' + hits + ' 个操作 / 共 ' +
+    Object.keys(SPEC.paths || {}).length + ' 个路径';
+}
+
+function opCard(path, method, op){
+  const params = op.parameters || [];
+  const pRows = params.map(pa => '<tr><td><code>' + esc(pa.name) + '</code></td>' +
+    '<td>' + esc(pa.in) + '</td><td>' + (pa.required ? '必填' : '可选') + '</td>' +
+    '<td class="small text-muted">' + esc((pa.schema && pa.schema.type) || '') +
+    (pa.description ? ' · ' + esc(pa.description) : '') + '</td></tr>').join('');
+  return '<div class="border rounded p-2 mb-2">' +
+    '<div class="d-flex align-items-center gap-2 mb-1">' +
+      '<span class="badge ' + (METHOD_CLASS[method] || 'text-bg-secondary') + '">' +
+        esc(method.toUpperCase()) + '</span>' +
+      '<code>' + esc(path) + '</code>' +
+      (op.requestBody ? '<span class="badge text-bg-light">JSON body</span>' : '') +
+    '</div>' +
+    '<div class="small mb-1">' + esc(op.summary || '') + '</div>' +
+    (pRows ? '<div class="table-responsive"><table class="table table-sm mb-0">' +
+      '<thead><tr><th>参数</th><th>位置</th><th>必填</th><th>说明</th></tr></thead><tbody>' +
+      pRows + '</tbody></table></div>' : '') +
+    '</div>';
+}
+
+function renderCodes(){
+  const codes = SPEC['x-error-codes'] || [];
+  document.getElementById('codeBody').innerHTML = codes.map(c =>
+    '<tr><td><code>' + esc(c.code) + '</code></td><td>' + esc(c.name) + '</td>' +
+    '<td>' + esc(c.http) + '</td><td class="small">' + esc(c.message) + '</td></tr>').join('');
+}
+
+document.getElementById('apiSearch').addEventListener('input', e => {
+  if(SPEC) renderList(e.target.value);
+});
+loadSpec();
+</script>
+{% endblock %}

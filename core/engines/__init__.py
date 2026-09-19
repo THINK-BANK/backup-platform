@@ -28,6 +28,7 @@ from core.engines.redis import RedisEngine
 from core.engines.mongodb import MongoEngine
 from core.engines.neo4j import Neo4jEngine
 from core.engines.file import FileBackupEngine
+from core.engines.object_storage import ObjectStorageEngine
 
 
 def _register_vm_engine():
@@ -61,6 +62,7 @@ ENGINE_REGISTRY = {
     "mongodb": MongoEngine,
     "neo4j": Neo4jEngine,
     "file": FileBackupEngine,
+    "object_storage": ObjectStorageEngine,
 }
 
 ENGINE_DISPLAY = {k: cls.display_name for k, cls in ENGINE_REGISTRY.items()}
@@ -71,7 +73,7 @@ ENGINE_DISPLAY["vm"] = "虚拟机"
 # peripheral_api : 外围引擎以 API 集成封装为主（逻辑导出 + 远程调用）
 _CORE_SELF = ("oracle", "kingbase", "dameng")
 _PERIPHERAL_API = ("mysql", "mariadb", "postgresql", "sqlserver",
-                   "redis", "mongodb", "neo4j", "file", "vm")
+                   "redis", "mongodb", "neo4j", "file", "vm", "object_storage")
 for _name in _CORE_SELF:
     if _name in ENGINE_REGISTRY:
         ENGINE_REGISTRY[_name].adapter_tier = "core_self"
@@ -119,6 +121,15 @@ _ENGINE_META_OVERRIDE = {
         "backup_modes": ["logical"],
         # 增量仅企业版「在线 backup」通道原生支持（--type=DIFF），
         # 其余通道由引擎诚实回退为全量并给出说明。
+        "supports_incremental": True,
+        "supports_full_instance": False,
+        "supports_sync": False,
+    },
+    "object_storage": {
+        "icon": "bi-cloud-arrow-up",
+        "description": "对象存储桶级保护：MinIO / 阿里云 OSS / 腾讯云 COS / S3 兼容；"
+                       "对象级索引 + 永远增量 + 版本捕获，桶侧零安装",
+        "backup_modes": ["logical"],
         "supports_incremental": True,
         "supports_full_instance": False,
         "supports_sync": False,

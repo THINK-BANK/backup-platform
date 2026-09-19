@@ -1,0 +1,121 @@
+name: CI (contract · regression · frontend)
+
+# 质量门禁流水线（文档 §11.2 / 差异 G7、G8）：
+#   contract   —— 接口契约 + 快速确定性用例 + 覆盖率门槛（阻断）
+#   regression —— 全量回归与基线比对，禁止新增失败（阻断）
+#   frontend   —— 真实 chromium 跑前端冒烟（阻断）
+# 与 docker-image.yml 的关系：镜像构建 job 依赖本文件的 contract 结论（见该文件 needs）。
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: '1'
+  # 提交前/CI 必须关掉工作台的 safe-delete 钩子，否则 pytest 会 INTERNALERROR
+  CODEBUDDY_SAFE_DELETE_ENABLED: '0'
+
+jobs:
+  contract:
+    name: 接口契约 + 快速用例 + 覆盖率门槛
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          # JPype1 等需要二进制 wheel（离线交付包中同样提供 wheel）
+          pip install --only-binary=:all: -r requirements-dev.txt
+
+      - name: 接口契约与命名门禁
+        run: python scripts/api_contract_check.py
+
+      - name: 快速门禁（确定性用例 + 覆盖率）
+        run: bash scripts/test_gate.sh
+
+      - name: 上传测试与覆盖率报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-artifacts
+          path: |
+            artifacts/junit-fast.xml
+            artifacts/coverage.xml
+          if-no-files-found: ignore
+
+  regression:
+    name: 全量回归（基线比对）
+    runs-on: ubuntu-latest
+    needs: contract
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install --only-binary=:all: -r requirements-dev.txt
+
+      - name: 全量回归（禁止新增失败）
+        run: bash scripts/test_gate.sh --full
+
+      - name: 上传全量报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-artifacts
+          path: artifacts/junit-full.xml
+          if-no-files-found: ignore
+
+  frontend:
+    name: 前端自动化（Playwright / chromium）
+    runs-on: ubuntu-latest
+    needs: contract
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: 安装依赖与浏览器
+        run: |
+          python -m pip install --upgrade pip
+          pip install --only-binary=:all: -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+
+      - name: 前端冒烟（真实浏览器：登录 + 全部页面 + API 契约）
+        run: python scripts/frontend_smoke.py --mode browser
+
+  gate-summary:
+    name: 门禁结论
+    runs-on: ubuntu-latest
+    needs: [contract, regression, frontend]
+    if: always()
+    steps:
+      - name: 汇总
+        run: |
+          echo "contract=${{ needs.contract.result }}"
+          echo "regression=${{ needs.regression.result }}"
+          echo "frontend=${{ needs.frontend.result }}"
+          if [ "${{ needs.contract.result }}" != "success" ] \
+             || [ "${{ needs.regression.result }}" != "success" ] \
+             || [ "${{ needs.frontend.result }}" != "success" ]; then
+            echo "门禁未全部通过"; exit 1
+          fi
+          echo "门禁全部通过 ✔"

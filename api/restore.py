@@ -56,6 +56,23 @@ def create_restore():
     record_id = data.get("record_id")
     if not record_id:
         return jsonify({"error": "record_id 必填"}), 400
+    # 对象存储恢复：目标是「桶 + 前缀」，不是主机/目录，走独立参数组。
+    # 支持颗粒级恢复（restore_keys 只回放指定对象）与删除应用（apply_deleted）。
+    restore_options = {}
+    if data.get("target_bucket"):
+        restore_options["target_bucket"] = str(data["target_bucket"]).strip()
+    if data.get("target_prefix") is not None:
+        restore_options["target_prefix"] = str(data["target_prefix"]).strip()
+    if data.get("overwrite"):
+        restore_options["overwrite"] = str(data["overwrite"]).strip()
+    if data.get("apply_deleted") is not None:
+        restore_options["apply_deleted"] = bool(data["apply_deleted"])
+    keys = data.get("restore_keys")
+    if keys:
+        restore_options["restore_keys"] = (
+            [k.strip() for k in str(keys).replace("\n", ",").split(",")
+             if k.strip()] if isinstance(keys, str) else list(keys))
+
     result = scheduler.run_restore_now(
         record_id,
         target_host_id=data.get("target_host_id"),
@@ -68,6 +85,7 @@ def create_restore():
         target_time=data.get("target_time"),
         pitr_restore_dir=data.get("pitr_restore_dir"),
         tables=data.get("tables"),
+        restore_options=restore_options or None,
     )
     if not result:
         return jsonify({"error": "备份记录不存在"}), 404

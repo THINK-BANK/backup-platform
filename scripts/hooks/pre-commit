@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# AIDBM 提交前门禁钩子（安装：bash scripts/install_git_hooks.sh）
+#
+# 做两件快事（约 30~60 秒）：
+#   1) 接口契约与命名检查（scripts/api_contract_check.py）
+#   2) 快速门禁：确定性用例 + 覆盖率门槛（scripts/test_gate.sh）
+#
+# 跳过（仅在明确知情时使用，CI 仍会拦截）：SKIP_GATE=1 git commit ...
+set -uo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
+cd "$ROOT"
+
+if [ "${SKIP_GATE:-0}" = "1" ]; then
+  echo "[pre-commit] SKIP_GATE=1，跳过本地门禁（CI 仍会检查）"
+  exit 0
+fi
+
+PY="${PY:-$ROOT/.venv/bin/python}"
+if [ ! -x "$PY" ]; then
+  PY="$(command -v python3 || true)"
+fi
+if [ -z "${PY:-}" ]; then
+  echo "[pre-commit] 未找到 Python，跳过本地门禁（CI 仍会检查）"
+  exit 0
+fi
+
+# 只改动文档/前端静态资源时不必跑用例，减少无谓等待
+CHANGED="$(git diff --cached --name-only)"
+if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" \
+      | grep -qE '^(app\.py|config\.py|auth\.py|api/|core/|scripts/|tests/)'; then
+  echo "[pre-commit] 本次改动未触及后端代码，跳过门禁"
+  exit 0
+fi
+
+echo "[pre-commit] 1/2 接口契约与命名检查…"
+PYTHONPATH="$ROOT" CODEBUDDY_SAFE_DELETE_ENABLED=0 "$PY" scripts/api_contract_check.py || {
+  echo "[pre-commit] 接口契约检查未通过（新增不合规接口？见 docs/api_conventions.md）"
+  exit 1
+}
+
+echo "[pre-commit] 2/2 快速门禁（确定性用例 + 覆盖率）…"
+PYTHONPATH="$ROOT" bash scripts/test_gate.sh || {
+  echo "[pre-commit] 快速门禁未通过，提交已阻止。确需跳过：SKIP_GATE=1 git commit ..."
+  exit 1
+}
+
+echo "[pre-commit] 通过 ✔"

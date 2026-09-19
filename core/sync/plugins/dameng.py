@@ -100,6 +100,32 @@ def _jdbc_connect(host: str, port: int, user: str, password: str,
                               [user, password])
 
 
+def _dict_rows(cur, variants, allow_user_view: bool = True):
+    """依次尝试字典视图查询，返回第一个成功的结果。
+
+    达梦的 ``DBA_*`` 字典视图（SYS.DBA_TABLES 等）默认**只对 DBA/SYSDBA 授权**，
+    业务用户执行会直接报 ``No select privilege on object [SYS.DBA_TABLES]``——
+    而同步/迁移几乎总是用业务用户连接（实测：MySQL→达梦同步任务用 MIGDM
+    用户，第一步 list_tables 即失败，整条链路跑不起来）。
+
+    ``ALL_*`` 只暴露当前用户有权限的对象、``USER_*`` 只暴露当前 schema，
+    两者都无需额外授权，因此优先尝试它们，最后才回退 ``DBA_*``。
+    ``allow_user_view`` 为假时跳过 ``USER_*``（schema 与连接用户不一致时，
+    ``USER_*`` 会返回**别的 schema** 的表，结果错误而非为空，必须排除）。
+    """
+    last = None
+    for sql, params in variants:
+        if (not allow_user_view) and "user_" in sql.lower():
+            continue
+        try:
+            cur.execute(sql, params)
+            return cur.fetchall()
+        except Exception as e:  # noqa: BLE001 - 换下一个字典视图
+            last = e
+            continue
+    raise last if last else RuntimeError("达梦字典视图查询失败")
+
+
 def _connect_dameng(host: str, port: int, user: str, password: str,
                     database: str = ""):
     """统一连接入口：优先 dmPython，不可用自动降级 JDBC。"""
@@ -126,10 +152,15 @@ class DamengSourceReader(SourceReader):
             cur = conn.cursor()
             schema = _upper(self.config.src_schema or self.config.src_username
                             or "SYSDBA")
-            cur.execute(
-                "SELECT table_name FROM dba_tables WHERE owner=? "
-                "ORDER BY table_name", (schema,))
-            return [_s(r[0]) for r in cur.fetchall()]
+            rows = _dict_rows(cur, [
+                ("SELECT table_name FROM all_tables WHERE owner=? "
+                 "ORDER BY table_name", (schema,)),
+                ("SELECT table_name FROM user_tables ORDER BY table_name", ()),
+                ("SELECT table_name FROM dba_tables WHERE owner=? "
+                 "ORDER BY table_name", (schema,)),
+            ], allow_user_view=(schema == _upper(self.config.src_username
+                                                 or "")))
+            return [_s(r[0]) for r in rows]
         finally:
             conn.close()
 
@@ -139,19 +170,41 @@ class DamengSourceReader(SourceReader):
             cur = conn.cursor()
             schema = _upper(self.config.src_schema or self.config.src_username
                             or "SYSDBA")
-            cur.execute(
-                "SELECT column_name, data_type, nullable, data_default, "
-                "data_length, data_precision, data_scale "
-                "FROM dba_tab_columns WHERE owner=? AND table_name=? "
-                "ORDER BY column_id", (schema, _upper(table)))
-            rows = cur.fetchall()
-            cur.execute(
-                "SELECT cols.column_name FROM dba_constraints c "
-                "JOIN dba_cons_columns cols ON c.owner=cols.owner "
-                "AND c.constraint_name=cols.constraint_name "
-                "WHERE c.owner=? AND c.table_name=? AND c.constraint_type='P'",
-                (schema, _upper(table)))
-            pk_set = {_s(r[0]) for r in cur.fetchall()}
+            # 列清单：ALL_* → USER_* → DBA_*（业务用户无权查 DBA_*，见 _dict_rows）
+            rows = _dict_rows(cur, [
+                ("SELECT column_name, data_type, nullable, data_default, "
+                 "data_length, data_precision, data_scale "
+                 "FROM all_tab_columns WHERE owner=? AND table_name=? "
+                 "ORDER BY column_id", (schema, _upper(table))),
+                ("SELECT column_name, data_type, nullable, data_default, "
+                 "data_length, data_precision, data_scale "
+                 "FROM user_tab_columns WHERE table_name=? "
+                 "ORDER BY column_id", (_upper(table),)),
+                ("SELECT column_name, data_type, nullable, data_default, "
+                 "data_length, data_precision, data_scale "
+                 "FROM dba_tab_columns WHERE owner=? AND table_name=? "
+                 "ORDER BY column_id", (schema, _upper(table))),
+            ], allow_user_view=(schema == _upper(self.config.src_username
+                                                 or "")))
+            pk_rows = _dict_rows(cur, [
+                ("SELECT cols.column_name FROM all_constraints c "
+                 "JOIN all_cons_columns cols ON c.owner=cols.owner "
+                 "AND c.constraint_name=cols.constraint_name "
+                 "WHERE c.owner=? AND c.table_name=? AND c.constraint_type='P'",
+                 (schema, _upper(table))),
+                ("SELECT cols.column_name FROM user_constraints c "
+                 "JOIN user_cons_columns cols "
+                 "ON c.constraint_name=cols.constraint_name "
+                 "WHERE c.table_name=? AND c.constraint_type='P'",
+                 (_upper(table),)),
+                ("SELECT cols.column_name FROM dba_constraints c "
+                 "JOIN dba_cons_columns cols ON c.owner=cols.owner "
+                 "AND c.constraint_name=cols.constraint_name "
+                 "WHERE c.owner=? AND c.table_name=? AND c.constraint_type='P'",
+                 (schema, _upper(table))),
+            ], allow_user_view=(schema == _upper(self.config.src_username
+                                                 or "")))
+            pk_set = {_s(r[0]) for r in pk_rows}
             cols = []
             for row in rows:
                 base = _s(row[1] or "").upper()
@@ -226,22 +279,40 @@ class DamengSinkWriter(SinkWriter):
         cur = conn.cursor()
         schema = _upper(self.config.tgt_schema or self.config.tgt_username
                         or "SYSDBA")
-        cur.execute("SELECT column_name FROM dba_tab_columns "
-                    "WHERE owner=? AND table_name=? ORDER BY column_id",
-                    (schema, _upper(table)))
-        return [_s(r[0]) for r in cur.fetchall()]
+        rows = _dict_rows(cur, [
+            ("SELECT column_name FROM all_tab_columns "
+             "WHERE owner=? AND table_name=? ORDER BY column_id",
+             (schema, _upper(table))),
+            ("SELECT column_name FROM user_tab_columns "
+             "WHERE table_name=? ORDER BY column_id", (_upper(table),)),
+            ("SELECT column_name FROM dba_tab_columns "
+             "WHERE owner=? AND table_name=? ORDER BY column_id",
+             (schema, _upper(table))),
+        ], allow_user_view=(schema == _upper(self.config.tgt_username or "")))
+        return [_s(r[0]) for r in rows]
 
     def _get_primary_keys(self, conn: Any, table: str) -> List[str]:
         cur = conn.cursor()
         schema = _upper(self.config.tgt_schema or self.config.tgt_username
                         or "SYSDBA")
-        cur.execute(
-            "SELECT cols.column_name FROM dba_constraints c "
-            "JOIN dba_cons_columns cols ON c.owner=cols.owner "
-            "AND c.constraint_name=cols.constraint_name "
-            "WHERE c.owner=? AND c.table_name=? AND c.constraint_type='P'",
-            (schema, _upper(table)))
-        return [_s(r[0]) for r in cur.fetchall()]
+        rows = _dict_rows(cur, [
+            ("SELECT cols.column_name FROM all_constraints c "
+             "JOIN all_cons_columns cols ON c.owner=cols.owner "
+             "AND c.constraint_name=cols.constraint_name "
+             "WHERE c.owner=? AND c.table_name=? AND c.constraint_type='P'",
+             (schema, _upper(table))),
+            ("SELECT cols.column_name FROM user_constraints c "
+             "JOIN user_cons_columns cols "
+             "ON c.constraint_name=cols.constraint_name "
+             "WHERE c.table_name=? AND c.constraint_type='P'",
+             (_upper(table),)),
+            ("SELECT cols.column_name FROM dba_constraints c "
+             "JOIN dba_cons_columns cols ON c.owner=cols.owner "
+             "AND c.constraint_name=cols.constraint_name "
+             "WHERE c.owner=? AND c.table_name=? AND c.constraint_type='P'",
+             (schema, _upper(table))),
+        ], allow_user_view=(schema == _upper(self.config.tgt_username or "")))
+        return [_s(r[0]) for r in rows]
 
     def _create_table_sql(self, table: str, columns: List[ColumnMeta]) -> str:
         cfg = self.config
@@ -355,9 +426,15 @@ class DamengSinkWriter(SinkWriter):
         table = cfg.target_table
         cur = conn.cursor()
         schema = _upper(cfg.tgt_schema or cfg.tgt_username or "SYSDBA")
-        cur.execute("SELECT COUNT(*) FROM dba_tables WHERE owner=? "
-                    "AND table_name=?", (schema, _upper(table)))
-        exists = cur.fetchone()[0] > 0
+        rows = _dict_rows(cur, [
+            ("SELECT COUNT(*) FROM all_tables WHERE owner=? AND table_name=?",
+             (schema, _upper(table))),
+            ("SELECT COUNT(*) FROM user_tables WHERE table_name=?",
+             (_upper(table),)),
+            ("SELECT COUNT(*) FROM dba_tables WHERE owner=? AND table_name=?",
+             (schema, _upper(table))),
+        ], allow_user_view=(schema == _upper(cfg.tgt_username or "")))
+        exists = (rows[0][0] or 0) > 0
         mode = cfg.save_mode
         if mode == "overwrite" and exists:
             cur.execute(f"DROP TABLE {self._table_ref(table)}")

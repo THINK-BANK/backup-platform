@@ -23,7 +23,7 @@ from typing import Dict, List, Any, Optional
 import core.db as db
 from core.ai_alert import AIPredictor
 
-from .tools import ToolRegistry, create_default_registry
+from .tools import ToolRegistry, create_default_registry, needs_confirm
 from .executor import ToolExecutor
 from .session import SessionManager
 
@@ -72,27 +72,56 @@ _pending_confirms: Dict[str, Dict] = {}
 
 # ---- ReAct System Prompt ----
 
-SYSTEM_PROMPT_TEMPLATE = """你是 AIDBM（AI 原生智能数据库灾备管理平台）的 AI 智能助手。你可以回答运维知识问题，也可以通过工具查询备份/巡检/存储/告警信息，或执行备份/巡检操作。
+SYSTEM_PROMPT_TEMPLATE = """你是 AIDBM（AI 原生智能数据库灾备管理平台）的 AI 智能运维助手，可以用自然语言驱动平台完成备份执行、巡检与信息查询。
 
 ## 可用工具
 
 {tools_description}
 
-## 输出格式
+## 操作分级（重要）
 
-你必须严格按以下 JSON 格式输出，不要输出任何 JSON 以外的解释文字：
+- **可直接执行**（直接返回 tool_call，不要 confirm_required）：
+  - 查询类：list_tasks / list_recent_records / get_storage_usage / list_alert_predictions / get_inspection_report
+  - run_backup_task：备份是低风险操作（只读取源库、写入平台存储），用户明确表示要备份某个库/任务时，
+    直接执行，并把真实结果（成功/失败、大小、耗时、产物路径）回报给用户。
+  - run_inspection（scope=quick）
+- **必须用户确认**（返回 confirm_required）：run_inspection（scope=full，全量巡检对数据库有性能影响）。
+
+## 任务定位规则（自然语言 → 备份任务）
+
+1. 用户用口语描述目标时（如"帮我执行 bpm1 库的备份"、"备份一下生产 MySQL"、"把附件桶备份一下"），
+   把关键描述放进 run_backup_task 的 task_name 参数（如 "bpm1"、"生产 MySQL"、"附件桶"），系统会自动模糊定位任务。
+2. 绝不自己编造 task_id。只有当用户明确给出 ID（如"执行任务 12"）时才传 task_id。
+3. 工具返回 needs_clarify=true（匹配到多个任务）时，禁止再次调用工具：直接输出 answer，
+   用 Markdown 表格列出候选任务（ID / 名称 / 库类型 / 主机）并请用户确认执行哪一个。
+4. 工具返回"没有找到匹配任务"时，输出 answer 说明未找到，并给出可用任务示例或建议先"列出所有备份任务"。
+
+## 输出格式（Markdown，面向运维人员）
+
+- 先给一句结论（含关键数字），再按需展开细节；不要复述工具的原始 JSON 字段名。
+- 数据 ≥3 条时使用 Markdown 表格；列数不超过 6 列，只保留用户关心的字段。
+- 状态值（success / failed / running / never 等）必须用行内代码包裹（如 `success`），前端会渲染成彩色徽章。
+- 数值带单位（MB/GB/%），时间统一为 YYYY-MM-DD HH:MM。
+- 行数多时只展示最重要的 5~15 行，并注明"共 N 条，仅展示前 M 条"。
+- 结尾可给 1 条后续建议（如"如需重跑，回复：执行任务 12"）。
+- 全文使用简体中文，禁止出现 type / tool / args 等技术字段，禁止输出 JSON 代码围栏。
+- 可使用 **加粗**、`行内代码`、- 列表、### 小标题、表格，但不要滥用。
+
+## JSON 输出协议
+
+你必须严格按以下 JSON 格式输出，JSON 之外的说明文字一律不要输出（Markdown 只能写在 content 字段里）：
 
 ### 纯问答（不调用工具）：
 ```json
 {{"type": "answer", "content": "你的回答文本"}}
 ```
 
-### 调用查询类工具（无需确认）：
+### 直接执行（查询类与低风险执行类）：
 ```json
 {{"type": "tool_call", "tool": "工具名", "args": {{参数对象}}}}
 ```
 
-### 需要确认的危险操作（备份、巡检）：
+### 需要确认的高风险操作（如全量巡检）：
 ```json
 {{"type": "confirm_required", "tool": "工具名", "args": {{参数对象}}, "reason": "需要确认的原因"}}
 ```
@@ -106,27 +135,37 @@ SYSTEM_PROMPT_TEMPLATE = """你是 AIDBM（AI 原生智能数据库灾备管理�
 
 用户: "最近备份有没有失败？"
 助手: ```json
-{{"type": "tool_call", "tool": "list_recent_records", "args": {{"limit": 10}}}}
+{{"type": "tool_call", "tool": "list_recent_records", "args": {{"only_failed": "true", "limit": 10}}}}
 ```
 
-用户: "查询存储用量"
+用户: "bpm1 这个库有哪些备份任务？"
 助手: ```json
-{{"type": "tool_call", "tool": "get_storage_usage", "args": {{}}}}
+{{"type": "tool_call", "tool": "list_tasks", "args": {{"keyword": "bpm1"}}}}
 ```
 
-用户: "查询最近的 AI 预测告警"
+用户: "帮我执行 bpm1 库的备份"
 助手: ```json
-{{"type": "tool_call", "tool": "list_alert_predictions", "args": {{"days": 7}}}}
+{{"type": "tool_call", "tool": "run_backup_task", "args": {{"task_name": "bpm1"}}}}
 ```
 
-用户: "帮我跑一次生产库巡检"
+用户: "备份一下生产 MySQL"
 助手: ```json
-{{"type": "confirm_required", "tool": "run_inspection", "args": {{"scope": "quick"}}, "reason": "巡检操作会短暂影响数据库性能，请确认是否继续？"}}
+{{"type": "tool_call", "tool": "run_backup_task", "args": {{"task_name": "生产 MySQL"}}}}
 ```
 
 用户: "立即执行备份任务 5"
 助手: ```json
-{{"type": "confirm_required", "tool": "run_backup_task", "args": {{"task_id": "5"}}, "reason": "即将执行备份任务 5，该操作会对数据库产生实际影响，请确认是否继续？"}}
+{{"type": "tool_call", "tool": "run_backup_task", "args": {{"task_id": "5"}}}}
+```
+
+用户: "帮我跑一次快速巡检"
+助手: ```json
+{{"type": "tool_call", "tool": "run_inspection", "args": {{"scope": "quick"}}}}
+```
+
+用户: "帮我跑一次全量巡检"
+助手: ```json
+{{"type": "confirm_required", "tool": "run_inspection", "args": {{"scope": "full"}}, "reason": "全量巡检会对数据库性能产生较大影响，请确认是否继续？"}}
 ```
 
 用户: "什么是RPO？"
@@ -141,18 +180,30 @@ SYSTEM_PROMPT_TEMPLATE = """你是 AIDBM（AI 原生智能数据库灾备管理�
 
 工具返回: {{"ok": true, "message": "", "data": {{"target_name": "本地存储", "path": "/data/backups", "total_gb": 500, "used_gb": 120, "free_gb": 380, "used_percent": 24}}}}
 助手: ```json
-{{"type": "answer", "content": "当前本地存储（/data/backups）总空间 500 GB，已用 120 GB（24%），剩余 380 GB，空间充足。"}}
+{{"type": "answer", "content": "本地存储 **/data/backups** 使用率 24%，空间充足。\\n\\n| 项目 | 数值 |\\n|---|---|\\n| 总空间 | 500 GB |\\n| 已用 | 120 GB |\\n| 可用 | 380 GB |"}}
+```
+
+工具返回（执行备份成功）: {{"ok": true, "message": "备份任务「bpm1 每日备份」执行成功", "data": {{"task_id": 12, "task_name": "bpm1 每日备份", "status": "success", "size_human": "12.40 MB", "duration_sec": 3.2, "record_id": 8841}}}}
+助手: ```json
+{{"type": "answer", "content": "备份任务「bpm1 每日备份」已执行 **成功**，产物 12.40 MB，耗时 3.2 秒。\\n\\n| 项目 | 结果 |\\n|---|---|\\n| 状态 | `success` |\\n| 产物大小 | 12.40 MB |\\n| 耗时 | 3.2 秒 |\\n| 记录 ID | 8841 |\\n\\n如需查看历史记录，回复：最近备份记录。"}}
+```
+
+工具返回（名称歧义）: {{"ok": false, "needs_clarify": true, "error": "「备份」匹配到 3 个备份任务", "candidates": [{{"id": 12, "name": "bpm1 每日备份", "db_type": "MySQL", "host": "127.0.0.1"}}, {{"id": 18, "name": "ERP 库备份", "db_type": "PostgreSQL", "host": "10.0.0.8"}}]}}
+助手: ```json
+{{"type": "answer", "content": "「备份」匹配到多个任务，请确认执行哪一个：\\n\\n| ID | 名称 | 类型 | 主机 |\\n|---|---|---|---|\\n| 12 | bpm1 每日备份 | MySQL | 127.0.0.1 |\\n| 18 | ERP 库备份 | PostgreSQL | 10.0.0.8 |\\n\\n回复「执行任务 12」即可立即执行。"}}
 ```
 
 ## 约束
 1. 一次只调用一个工具。
-2. 涉及执行操作（run_backup_task / run_inspection）时必须先返回 confirm_required，不能直接执行。
+2. 低风险执行类操作（run_backup_task、scope=quick 的巡检）直接返回 tool_call 执行，不要 confirm_required；只有全量巡检等高风险操作才返回 confirm_required。
 3. 查询类工具（list_tasks / list_recent_records / get_storage_usage / list_alert_predictions / get_inspection_report）不需要确认，直接调用。
-4. 不确定参数时，先使用 list_tasks 等查询工具获取信息，再决定下一步。
+4. 不确定任务时，先使用 list_tasks（可带 keyword）查询，再决定下一步。
 5. 绝不虚构 task_id、target_id 等 ID，不确定时先用 list_tasks 查询。
 6. get_storage_usage 不指定 target_id 时默认查询默认本地存储。
-7. 你给出的 content 要简洁、面向用户，不要包含 JSON 结构、代码围栏或 "type"/"tool"/"args" 等技术字段。
-8. 当消息历史中已经包含某工具的返回结果（role=tool）时，必须直接输出 answer 总结该结果，禁止再次调用同一工具。"""
+7. 你给出的 content 要简洁、面向用户，使用 Markdown（表格 / 列表 / 加粗 / 行内代码），不要包含 JSON 结构、代码围栏或 "type"/"tool"/"args" 等技术字段。
+8. 当消息历史中已经包含某工具的返回结果（role=tool）时，必须直接输出 answer 总结该结果，禁止再次调用同一工具。
+9. 工具返回 needs_clarify=true（任务名有歧义）时，直接输出 answer 列出候选让用户选择，禁止改参数重试。
+10. 工具执行失败时如实说明失败原因与建议动作，不要美化或隐瞒结果。"""
 
 
 class AIAgent:
@@ -241,9 +292,9 @@ class AIAgent:
         _pending_confirms.pop(session_id, None)
 
         try:
-            # 执行工具（确认后不再拦截）
+            # 执行工具（用户已确认，直接执行不再拦截）
             tool = self.registry.get(tool_name)
-            if tool and tool.requires_confirm:
+            if tool and needs_confirm(tool, args):
                 result = self._execute_tool_directly(tool_name, args, context)
             else:
                 result = self.executor.execute(tool_name, args, context)
@@ -369,9 +420,9 @@ class AIAgent:
                         "content": error_content,
                     }
 
-                # 防御性检查：查询类工具已经拿到结果就不要再重复调用，
+                # 防御性检查：免确认的工具已经拿到结果就不要再重复调用，
                 # 避免 LLM 陷入死循环导致最后只能返回兜底文案
-                if not tool.requires_confirm and any(
+                if not needs_confirm(tool, args) and any(
                     step.get("name") == tool_name for step in tool_trace
                 ):
                     fallback_content = self._format_tool_trace_to_answer(tool_trace)
@@ -383,8 +434,8 @@ class AIAgent:
                         "tool_trace": tool_trace,
                     }
 
-                # 检查是否需要确认
-                if tool.requires_confirm:
+                # 检查是否需要确认（按工具风险等级与参数动态判定）
+                if needs_confirm(tool, args):
                     reason = parsed.get("reason") or self.executor._build_confirm_reason(tool, args)
                     tool_call_id = str(uuid.uuid4())
 
@@ -411,6 +462,7 @@ class AIAgent:
                     }
 
                 # 不需确认：执行工具
+                _step_started = time.time()
                 exec_result = self.executor.execute(tool_name, args, context)
 
                 # 防御性：executor 在某些代码路径下可能仍返回非 dict（例如端点
@@ -448,7 +500,13 @@ class AIAgent:
                 self.session_mgr.add_tool_message(
                     session_id, tool_name, exec_result, content=f"工具 {tool_name} 执行结果")
 
-                tool_trace.append({"name": tool_name, "args": args, "result": exec_result})
+                tool_trace.append({
+                    "name": tool_name,
+                    "args": args,
+                    "result": exec_result,
+                    "risk_level": getattr(tool, "risk_level", "low"),
+                    "duration_ms": int((time.time() - _step_started) * 1000),
+                })
 
                 # 重建 LLM 消息列表（含工具结果），再次调 LLM
                 messages = self.session_mgr.build_messages_for_llm(
@@ -709,6 +767,41 @@ class AIAgent:
             parts.append(formatted)
         return "\n\n".join(parts)
 
+    @staticmethod
+    def _md_cell(value) -> str:
+        """Markdown 表格单元格：转义竖线、换行与空值占位。"""
+        text = "-" if value in (None, "") else str(value)
+        return text.replace("|", "\\|").replace("\n", " ")
+
+    @staticmethod
+    def _status_text(value) -> str:
+        """状态值文本（调用处以行内代码包裹，前端渲染为彩色徽章）。"""
+        text = str(value or "").strip().lower()
+        return text or "unknown"
+
+    @staticmethod
+    def _fmt_time(value) -> str:
+        """时间统一为 YYYY-MM-DD HH:MM。"""
+        text = str(value or "").strip()
+        if not text:
+            return "-"
+        return text[:16].replace("T", " ")
+
+    @staticmethod
+    def _size_human(size) -> str:
+        """字节数转可读字符串。"""
+        try:
+            n = float(size or 0)
+        except (TypeError, ValueError):
+            return "-"
+        if n <= 0:
+            return "0 B"
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                return "{} B".format(int(n)) if unit == "B" else "{:.2f} {}".format(n, unit)
+            n /= 1024
+        return "{:.2f} TB".format(n)
+
     def _format_tool_result_to_answer(self, tool_name: str, result: Dict) -> str:
         """将单个工具结果格式化为面向用户的文本。"""
         if not isinstance(result, dict):
@@ -719,68 +812,108 @@ class AIAgent:
         data = result.get("data")
         error = result.get("error")
 
+        # 任务名歧义：列出候选让用户澄清（绝不猜测执行）
+        if result.get("needs_clarify"):
+            cands = result.get("candidates") or []
+            lines = ["**{}**".format(error or "匹配到多个备份任务，请确认执行哪一个："), ""]
+            lines.append("| ID | 名称 | 类型 | 主机 | 状态 |")
+            lines.append("|---|---|---|---|---|")
+            for c in cands[:10]:
+                host = c.get("host") or "-"
+                if host != "-" and c.get("port"):
+                    host = "{}:{}".format(host, c.get("port"))
+                lines.append(
+                    "| {} | {} | {} | {} | `{}` |".format(
+                        c.get("id", "-"),
+                        self._md_cell(c.get("name")),
+                        self._md_cell(c.get("db_type")),
+                        self._md_cell(host),
+                        self._status_text(c.get("last_status")),
+                    )
+                )
+            lines.append("")
+            lines.append("回复「执行任务 <ID>」即可立即执行。")
+            return "\n".join(lines)
+
         if not ok:
-            return f"操作未成功：{error or message or '未知错误'}"
+            hint = result.get("hint")
+            text = "操作未成功：{}".format(error or message or "未知错误")
+            if hint:
+                text += "\n\n> {}".format(hint)
+            avail = result.get("available_tasks")
+            if avail:
+                text += "\n\n可用任务示例：" + "、".join(str(a) for a in avail[:6])
+            return text
 
         # 根据工具类型做格式化展示
         if tool_name == "list_tasks":
             rows = data or []
             if not rows:
                 return "当前没有任何备份任务。"
-            lines = ["当前共有 {} 个备份任务：".format(len(rows))]
-            lines.append("| ID | 名称 | 数据库类型 | 备份模式 | 主机 | 状态 |")
-            lines.append("|---|---|---|---|---|---|")
-            for r in rows[:30]:
+            lines = ["共有 **{}** 个备份任务：".format(len(rows)), ""]
+            lines.append("| ID | 名称 | 类型 | 主机 | 状态 |")
+            lines.append("|---|---|---|---|---|")
+            for r in rows[:15]:
+                host = r.get("host") or "-"
+                if host != "-" and r.get("port"):
+                    host = "{}:{}".format(host, r.get("port"))
                 lines.append(
-                    "| {} | {} | {} | {} | {} | {} |".format(
+                    "| {} | {} | {} | {} | `{}` |".format(
                         r.get("id", "-"),
-                        (r.get("name") or "-").replace("|", "\\|"),
-                        r.get("db_type") or "-",
-                        r.get("backup_mode") or "-",
-                        "{}:{}".format(r.get("host") or "-", r.get("port") or "-") if r.get("host") else "-",
-                        r.get("last_status") or "-",
+                        self._md_cell(r.get("name")),
+                        self._md_cell(r.get("db_type") or r.get("db_type_display")),
+                        self._md_cell(host),
+                        self._status_text(r.get("last_status") or ("enabled" if r.get("enabled") else "never")),
                     )
                 )
+            if len(rows) > 15:
+                lines.append("")
+                lines.append("> 共 {} 条，仅展示前 15 条。可按关键字查询，例如：bpm1 有哪些备份任务？".format(len(rows)))
             return "\n".join(lines)
 
         if tool_name == "list_recent_records":
             rows = data or []
             if not rows:
-                return "最近没有备份执行记录。"
-            lines = ["最近 {} 条备份记录如下：".format(len(rows))]
-            lines.append("| 记录ID | 任务 | 类型 | 状态 | 大小 | 开始时间 | 仿真 |")
-            lines.append("|---|---|---|---|---|---|---|")
-            for r in rows[:30]:
-                size = r.get("size_bytes")
-                size_str = "-"
-                if size:
-                    size_str = "{:.2f} MB".format(size / (1024 * 1024)) if size > 1024 * 1024 else "{:.2f} KB".format(size / 1024)
-                sim = "是" if r.get("is_simulated") else "否"
+                return "最近没有符合条件的备份记录。"
+            lines = ["最近 **{}** 条备份记录：".format(len(rows)), ""]
+            lines.append("| 记录 | 任务 | 类型 | 状态 | 大小 | 开始时间 |")
+            lines.append("|---|---|---|---|---|---|")
+            for r in rows[:15]:
                 lines.append(
-                    "| {} | {} | {} | {} | {} | {} | {} |".format(
+                    "| {} | {} | {} | `{}` | {} | {} |".format(
                         r.get("id", "-"),
-                        (r.get("task_name") or "-").replace("|", "\\|"),
-                        r.get("backup_type") or "-",
-                        r.get("status") or "-",
-                        size_str,
-                        r.get("started_at") or "-",
-                        sim,
+                        self._md_cell(r.get("task_name")),
+                        self._md_cell(r.get("backup_type")),
+                        self._status_text(r.get("status")),
+                        self._md_cell(r.get("size_human") or self._size_human(r.get("size_bytes"))),
+                        self._fmt_time(r.get("started_at")),
                     )
                 )
+            if len(rows) > 15:
+                lines.append("")
+                lines.append("> 共 {} 条，仅展示前 15 条。".format(len(rows)))
+            failed = [r for r in rows if str(r.get("status") or "").lower() in ("failed", "error")]
+            if failed:
+                lines.append("")
+                lines.append("其中 **{}** 条失败，建议重点检查：{}".format(
+                    len(failed), self._md_cell(failed[0].get("task_name"))))
             return "\n".join(lines)
 
         if tool_name == "get_storage_usage":
             d = data or {}
+            used = d.get("used_percent", "-")
             return (
-                "存储目标：{}（{}）\n"
-                "总空间：{} GB，已用：{} GB，可用：{} GB\n"
-                "使用率：{}%".format(
+                "存储目标 **{}**（{}）使用率 {}%，空间{}。\n\n"
+                "| 项目 | 数值 |\n|---|---|\n"
+                "| 总空间 | {} GB |\n| 已用 | {} GB |\n| 可用 | {} GB |".format(
                     d.get("target_name", "-"),
                     d.get("path", "-"),
+                    used,
+                    "紧张" if str(used).replace("%", "").replace("-", "0").isdigit()
+                    and float(str(used).replace("%", "") or 0) >= 85 else "充足",
                     d.get("total_gb", "-"),
                     d.get("used_gb", "-"),
                     d.get("free_gb", "-"),
-                    d.get("used_percent", "-"),
                 )
             )
 
@@ -788,19 +921,22 @@ class AIAgent:
             rows = data or []
             if not rows:
                 return "最近没有 AI 预测告警。"
-            lines = ["最近 AI 预测告警（共 {} 条）：".format(len(rows))]
+            lines = ["最近 AI 预测告警（共 **{}** 条）：".format(len(rows)), ""]
             lines.append("| 指标 | 风险等级 | 分数 | 预测时间 | 内容 |")
             lines.append("|---|---|---|---|---|")
-            for r in rows[:20]:
+            for r in rows[:15]:
                 lines.append(
-                    "| {} | {} | {} | {} | {} |".format(
-                        r.get("metric") or "-",
-                        r.get("risk_level") or "-",
+                    "| {} | `{}` | {} | {} | {} |".format(
+                        self._md_cell(r.get("metric")),
+                        str(r.get("risk_level") or "unknown").lower(),
                         r.get("risk_score") or "-",
-                        r.get("predicted_at") or "-",
-                        (r.get("predicted_content") or "-").replace("|", "\\|"),
+                        self._fmt_time(r.get("predicted_at")),
+                        self._md_cell(r.get("predicted_content")),
                     )
                 )
+            if len(rows) > 15:
+                lines.append("")
+                lines.append("> 共 {} 条，仅展示前 15 条。".format(len(rows)))
             return "\n".join(lines)
 
         if tool_name == "get_inspection_report":
@@ -825,9 +961,31 @@ class AIAgent:
         if tool_name == "run_backup_task":
             d = data or {}
             if d.get("accepted"):
-                return "备份任务已提交后台执行，可在备份记录页面查看进度。"
-            status = d.get("status", "未知")
-            return "备份任务执行结果：{}。{}".format(status, message)
+                return "备份任务已提交后台执行（异步），可在「备份记录」页查看进度。"
+            status = self._status_text(d.get("status"))
+            succeeded = status == "success"
+            name = d.get("task_name") or "#{}".format(d.get("task_id", "-"))
+            lines = [
+                "备份任务「{}」执行{}。".format(self._md_cell(name), "**成功**" if succeeded else "**失败**"),
+                "",
+                "| 项目 | 结果 |",
+                "|---|---|",
+                "| 状态 | `{}` |".format(status),
+                "| 任务 ID | {} |".format(d.get("task_id", "-")),
+                "| 备份类型 | {} |".format(self._md_cell(d.get("backup_type"))),
+                "| 产物大小 | {} |".format(self._md_cell(d.get("size_human") or self._size_human(d.get("size_bytes")))),
+                "| 耗时 | {} 秒 |".format(d.get("duration_sec", "-")),
+                "| 记录 ID | {} |".format(d.get("record_id", "-")),
+            ]
+            if d.get("backup_path"):
+                lines.append("| 产物路径 | `{}` |".format(self._md_cell(d.get("backup_path"))))
+            if not succeeded and d.get("message"):
+                lines.append("")
+                lines.append("失败原因：{}".format(self._md_cell(d.get("message"))))
+            elif succeeded:
+                lines.append("")
+                lines.append("如需查看该任务的历史记录，可以回复：最近备份记录。")
+            return "\n".join(lines)
 
         if tool_name == "run_inspection":
             d = data or {}
@@ -890,42 +1048,36 @@ class AIAgent:
                 self.session_mgr.add_assistant_message(session_id, answer)
                 return {"ok": True, "type": "answer", "content": answer}
 
-        # 2) 危险操作类（需确认）—— 注意：先排除"列出/查询"类意图
+        # 2) 执行类意图。操作分级与 LLM 路径保持一致：
+        #    备份 / 快速巡检 = 低风险 → 直接执行并返回真实结果
+        #    全量巡检 = 高风险 → 返回确认请求
         is_query_intent = any(k in text for k in
                               ("列出", "所有任务", "任务列表", "有哪些任务", "有哪些备份",
                                "查询", "查看", "显示", "多少", "列表", "巡检报告", "巡检结果", "告警", "预测", "风险"))
-        if not is_query_intent and any(k in text for k in
-                                       ("执行备份", "跑备份", "备份一下", "立即备份", "开始备份", "做一次备份", "手动备份")):
-            # 尝试从文本提取 task id
+        exec_verbs = ("执行", "跑", "立即", "马上", "开始", "做一次", "手动", "帮我", "请帮", "进行", "来一次", "备份一下")
+
+        if not is_query_intent and "备份" in text and any(v in text for v in exec_verbs):
             import re
             m = re.search(r"任务\s*#?\s*(\d+)", user_message)
-            tid = m.group(1) if m else None
-            args = {"task_id": tid} if tid else {}
-            reason = (f"即将执行备份任务 {tid}，该操作会对数据库产生实际影响，请确认是否继续？"
-                      if tid else "即将执行备份任务，请确认任务 ID 后继续？")
-            tool_call_id = str(uuid.uuid4())
-            _pending_confirms[session_id] = {
-                "tool_call_id": tool_call_id,
-                "tool_name": "run_backup_task",
-                "args": args,
-                "reason": reason,
-                "context": context,
-            }
-            return {
-                "ok": True,
-                "type": "confirm_required",
-                "content": reason,
-                "pending_confirm": {
-                    "tool_call_id": tool_call_id,
-                    "tool_name": "run_backup_task",
-                    "args": args,
-                    "reason": reason,
-                },
-            }
-        if not is_query_intent and any(k in text for k in ("巡检", "检查一遍", "跑一次巡检", "执行巡检", "做一次巡检")):
+            if m:
+                args = {"task_id": m.group(1)}
+            else:
+                kw = self._extract_task_keyword(user_message)
+                args = {"task_name": kw} if kw else {}
+            if not args:
+                content = ("请告诉我需要执行哪个备份任务（任务名或 ID），"
+                           "例如：**帮我执行 bpm1 库的备份**。")
+                self.session_mgr.add_assistant_message(session_id, content)
+                return {"ok": True, "type": "answer", "content": content}
+            # 低风险：直接执行
+            return self._run_fallback_tool(session_id, "run_backup_task", args, context)
+
+        if not is_query_intent and "巡检" in text and any(v in text for v in exec_verbs):
             scope = "full" if "全量" in text else "quick"
-            reason = ("全量巡检会对数据库性能产生较大影响，请确认是否继续？"
-                      if scope == "full" else "巡检操作会短暂影响数据库性能，请确认是否继续？")
+            if scope == "quick":
+                # 快速巡检低风险：直接执行
+                return self._run_fallback_tool(session_id, "run_inspection", {"scope": "quick"}, context)
+            reason = "全量巡检会对数据库性能产生较大影响，请确认是否继续？"
             tool_call_id = str(uuid.uuid4())
             _pending_confirms[session_id] = {
                 "tool_call_id": tool_call_id,
@@ -963,15 +1115,57 @@ class AIAgent:
         # 无法识别：返回 None，由上层给出通用提示
         return None
 
+    @staticmethod
+    def _extract_task_keyword(message: str) -> str:
+        """从自然语言指令中抽取任务关键字（无 LLM 环境下的兜底执行用）。
+
+        例："帮我执行 bpm1 库的备份" → "bpm1"；"备份一下对象存储附件桶" → "附件桶"。
+        """
+        import re
+        text = re.sub(r"[，。！？、,\.\!\?\s：:；;]+", " ", str(message or ""))
+        stop_words = ("立即执行", "帮我执行", "帮我", "请帮", "请", "执行", "跑一下", "跑一次", "立即",
+                      "马上", "开始", "做一次", "手动", "进行", "来一次", "一次", "备份一下", "备份",
+                      "任务", "数据库", "数据", "库", "的", "把", "给", "我要", "我想", "需要",
+                      "现在", "这个", "那个", "一下", "吧", "了")
+        for word in sorted(stop_words, key=len, reverse=True):
+            text = text.replace(word, " ")
+        parts = [p.strip() for p in text.split(" ") if p.strip()]
+        for p in parts:
+            if re.search(r"[A-Za-z0-9_\-]", p):
+                return p
+        return parts[0] if parts else ""
+
     def _run_fallback_tool(self, session_id: str, tool_name: str, args: Dict,
                           context: Dict) -> Dict:
-        """兜底执行单个查询工具并格式化结果。"""
+        """兜底执行单个工具并格式化结果。"""
         tool = self.registry.get(tool_name)
         if not tool:
             return None
         exec_result = self.executor.execute(tool_name, args, context)
         if not isinstance(exec_result, dict):
             exec_result = {"ok": False, "error": "工具返回格式异常"}
+        # 若该次调用被判为需要确认（条件确认工具），转为确认请求
+        if exec_result.get("needs_confirm"):
+            tool_call_id = str(uuid.uuid4())
+            reason = exec_result.get("message") or "该操作需要确认后执行。"
+            _pending_confirms[session_id] = {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "args": args,
+                "reason": reason,
+                "context": context,
+            }
+            return {
+                "ok": True,
+                "type": "confirm_required",
+                "content": reason,
+                "pending_confirm": {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "args": args,
+                    "reason": reason,
+                },
+            }
         self.session_mgr.add_tool_message(session_id, tool_name, exec_result)
         content = self._format_tool_result_to_answer(tool_name, exec_result)
         self.session_mgr.add_assistant_message(session_id, content)
@@ -979,7 +1173,12 @@ class AIAgent:
             "ok": True,
             "type": "answer",
             "content": content,
-            "tool_trace": [{"name": tool_name, "args": args, "result": exec_result}],
+            "tool_trace": [{
+                "name": tool_name,
+                "args": args,
+                "result": exec_result,
+                "risk_level": getattr(tool, "risk_level", "low"),
+            }],
         }
 
     def _parse_response(self, llm_text: str) -> Dict:

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <link rel="stylesheet" href="/static/css/agent.css">
+<link rel="stylesheet" href="/static/css/agent-render.css?v=2026091902">
 
 <div class="agent-wrap" id="agentWrap">
 
@@ -42,11 +43,11 @@
       <div class="agent-empty">
         <i class="bi bi-robot"></i>
         <div class="ae-title">AI 智能助手</div>
-        <div>可查询备份任务、巡检结果与存储用量，涉及危险操作时会先向你确认。</div>
+        <div>用自然语言直接下达指令：说"帮我执行 XX 库的备份"即可立即备份并回报真实结果；
+          查询类信息随时可问，全量巡检等高风险操作会先请你确认。</div>
         <div class="agent-actions agent-empty-actions">
           <span class="agent-tip" data-tip="列出所有备份任务">列出所有备份任务</span>
           <span class="agent-tip" data-tip="最近备份有没有失败？">最近备份有没有失败？</span>
-          <span class="agent-tip" data-tip="帮我跑一次巡检">帮我跑一次巡检</span>
           <span class="agent-tip" data-tip="查询存储用量">查询存储用量</span>
         </div>
       </div>
@@ -54,7 +55,7 @@
 
     <div class="agent-compose">
       <textarea class="agent-input" id="agentInput" rows="1"
-                placeholder="输入问题，例如：列出所有备份任务 / 帮我跑一次巡检"></textarea>
+                placeholder="用自然语言下达指令，例如：帮我执行 bpm1 库的备份 / 最近备份有没有失败"></textarea>
 
       <div class="agent-compose-bottom">
         <span class="agent-status" id="agentStatusHint">就绪</span>
@@ -66,8 +67,9 @@
       <div class="agent-actions">
         <span class="agent-tip" data-tip="列出所有备份任务">列出所有备份任务</span>
         <span class="agent-tip" data-tip="最近备份有没有失败？">最近备份有没有失败？</span>
-        <span class="agent-tip" data-tip="帮我跑一次巡检">帮我跑一次巡检</span>
         <span class="agent-tip" data-tip="查询存储用量">查询存储用量</span>
+        <span class="agent-tip" data-tip="帮我执行 bpm1 库的备份">帮我执行 bpm1 库的备份</span>
+        <span class="agent-tip" data-tip="帮我跑一次快速巡检">帮我跑一次快速巡检</span>
       </div>
     </div>
 
@@ -125,4 +127,8 @@
     });
   })();
 </script>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/agent-render.js?v=2026091902"></script>
 {% endblock %}

@@ -37,11 +37,28 @@
   ];
 
   // -------------- 初始化 --------------
-  document.addEventListener("DOMContentLoaded", function () {
+  document.addEventListener("DOMContentLoaded", async function () {
     bindEvents();
     refreshTasks();
-    fillDbTypeSelect($("srcDbType"));
-    fillDbTypeSelect($("tgtDbType"));
+    // 类型下拉依赖 META：必须先等它就绪再填充，否则会填成空（这正是
+    // 「新建同步任务里数据库类型选不了」的根因——此前 META 由 app.js 异步
+    // 加载，本脚本同步调用，永远抢在前面拿到空数组）。
+    if (window.BKP && BKP.ensureMeta) {
+      try { await BKP.ensureMeta(); } catch (e) { /* 已内部兜底 */ }
+    }
+    // 类型清单取「同步插件注册表」（sync_types）：注册即出现，新增库型
+    // 不用改前端；默认选中 MySQL/MariaDB，方便沿用 3306。
+    const typeOpts = {
+      typesKey: "sync_types",
+      onReady: function (el, types) {
+        // 初始化时给个默认值，避免用户什么都没选就直接点"测试连接"
+        if (types.indexOf("mysql") >= 0) el.value = "mysql";
+      }
+    };
+    fillDbTypeSelect($("srcDbType"), [], typeOpts);
+    fillDbTypeSelect($("tgtDbType"), [], typeOpts);
+    onSrcDbTypeChange();
+    onTgtDbTypeChange();
   });
 
   function bindEvents() {
@@ -195,18 +212,39 @@
     }).join("");
   }
 
+  // 默认端口以服务端 META.default_ports 为准（各库型差异大：PG 5432、
+  // Oracle 1521、达梦 5236、金仓 54321…），不再用三元表达式写死两个值。
+  function defaultPort(t) {
+    const dp = (window.BKP && BKP.META && BKP.META.default_ports) || {};
+    return dp[t] || 3306;
+  }
+
+  // 类型切换时联动端口：仅当端口为空、或仍等于「上一个类型的默认端口」
+  // （即用户没手改过）才替换，避免覆盖用户填写的自定义端口。
+  function applyDefaultPort(portId, type, prevType) {
+    const cur = String($(portId).value || "").trim();
+    const prevDefault = prevType ? String(defaultPort(prevType)) : "";
+    if (!cur || (prevDefault && cur === prevDefault)) {
+      $(portId).value = defaultPort(type);
+    }
+  }
+
+  function schemaNeeded(t) {
+    return t === "postgresql" || t === "kingbase" || t === "oracle";
+  }
+
   function onSrcDbTypeChange() {
     const t = $("srcDbType").value;
-    const needSchema = t === "postgresql" || t === "kingbase" || t === "oracle";
-    $("srcSchemaWrap").style.display = needSchema ? "block" : "none";
-    $("srcPort").value = $("srcPort").value || (t === "postgresql" ? 5432 : 3306);
+    $("srcSchemaWrap").style.display = schemaNeeded(t) ? "block" : "none";
+    applyDefaultPort("srcPort", t, $("srcDbType").dataset.prevType);
+    $("srcDbType").dataset.prevType = t;
   }
 
   function onTgtDbTypeChange() {
     const t = $("tgtDbType").value;
-    const needSchema = t === "postgresql" || t === "kingbase" || t === "oracle";
-    $("tgtSchemaWrap").style.display = needSchema ? "block" : "none";
-    $("tgtPort").value = $("tgtPort").value || (t === "postgresql" ? 5432 : 3306);
+    $("tgtSchemaWrap").style.display = schemaNeeded(t) ? "block" : "none";
+    applyDefaultPort("tgtPort", t, $("tgtDbType").dataset.prevType);
+    $("tgtDbType").dataset.prevType = t;
   }
 
   function onSyncModeChange() {

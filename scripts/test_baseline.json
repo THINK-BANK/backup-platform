@@ -1,0 +1,51 @@
+{
+  "errors": 30,
+  "failed": 170,
+  "failing_modules": {
+    "tests.test_ai_agent": {
+      "failed": 1,
+      "total": 105
+    },
+    "tests.test_backup_restore_all": {
+      "failed": 18,
+      "total": 18
+    },
+    "tests.test_plugin_serverside": {
+      "failed": 3,
+      "total": 26
+    },
+    "tests.test_record_display": {
+      "failed": 31,
+      "total": 49
+    },
+    "tests.test_rt_journal": {
+      "failed": 44,
+      "total": 48
+    },
+    "tests.test_rt_t01": {
+      "failed": 33,
+      "total": 33
+    },
+    "tests.test_rt_t02_t05": {
+      "failed": 20,
+      "total": 22
+    },
+    "tests.test_rt_t06_cdc": {
+      "failed": 36,
+      "total": 57
+    },
+    "tests.test_vm_backup": {
+      "failed": 5,
+      "total": 14
+    },
+    "tests.test_vm_orchestration": {
+      "failed": 9,
+      "total": 9
+    }
+  },
+  "modules_total": 18,
+  "note": "存量环境依赖失败基线（缺真实 DB/SSH 目标等）。门禁要求：failed/errors 不高于此值，passed 不低于此值。修复存量失败后请重跑 --update-baseline 收紧基线。",
+  "passed": 308,
+  "skipped": 1,
+  "total": 509
+}

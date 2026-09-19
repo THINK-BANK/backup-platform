@@ -190,6 +190,8 @@ class SessionManager:
             entry = {
                 "role": msg.get("role", ""),
                 "content": msg.get("content", "") or "",
+                # 时间戳一并返回，供前端消息气泡展示（此前只有内容，气泡无时间）
+                "created_at": msg.get("created_at") or "",
             }
             # 解析 tool_calls（JSON 字符串 → list）
             tc = msg.get("tool_calls")

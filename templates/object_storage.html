@@ -1,0 +1,329 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-start mb-3 gap-2">
+  <div>
+    <h4 class="mb-1"><i class="bi bi-cloud-arrow-up"></i> 对象存储备份</h4>
+    <div class="text-muted small">
+      桶级保护：对象级索引（<code>manifest.json</code>）+ 永远增量（ETag / LastModified / Size 差分）+ 版本捕获 +
+      <strong>对象级细粒度恢复</strong>。协议与 SigV4 签名由平台侧实现，<strong>桶侧零安装、零改造</strong>。
+    </div>
+  </div>
+  <div class="d-flex gap-2">
+    <button class="btn btn-outline-secondary btn-sm" id="osRefreshBtn"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+    <button class="btn btn-primary btn-sm" id="osNewTaskBtn" data-perm="backup.task.manage"><i class="bi bi-plus-lg"></i> 新建备份任务</button>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body py-3">
+    <div class="text-muted small">受保护桶</div>
+    <div class="fs-5 fw-semibold" id="osKpiBuckets">-</div>
+  </div></div></div>
+  <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body py-3">
+    <div class="text-muted small">备份任务</div>
+    <div class="fs-5 fw-semibold" id="osKpiTasks">-</div>
+  </div></div></div>
+  <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body py-3">
+    <div class="text-muted small">最近备份</div>
+    <div class="fs-6 fw-semibold" id="osKpiLastBackup">-</div>
+    <div class="small" id="osKpiLastStatus"></div>
+  </div></div></div>
+  <div class="col-6 col-lg-3"><div class="card h-100"><div class="card-body py-3">
+    <div class="text-muted small">最近一次产物</div>
+    <div class="fs-5 fw-semibold" id="osKpiLastSize">-</div>
+    <div class="small text-muted" id="osKpiLastBucket"></div>
+  </div></div></div>
+</div>
+
+<div class="card mb-3" id="osCfgCard">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-plug"></i> 接入配置与桶探测
+      <span class="text-muted small ms-2">先在真实桶上验证端点 / 密钥，再保存为备份任务</span></span>
+    <span class="badge bg-secondary" id="osCfgMode">新建任务</span>
+  </div>
+  <div class="card-body">
+    <div class="row g-3">
+      <div class="col-md-4">
+        <label class="form-label">厂商 / 兼容形态</label>
+        <select class="form-select" id="os_provider"></select>
+        <div class="form-text" id="os_provider_hint">—</div>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">端点 Endpoint <span class="text-danger">*</span></label>
+        <input class="form-control" id="os_endpoint" placeholder="192.168.1.10:9000" autocomplete="off">
+        <div class="form-text">可写 <code>host:port</code>，也可带 <code>http(s)://</code></div>
+      </div>
+      <div class="col-md-1">
+        <label class="form-label">端口</label>
+        <input class="form-control" id="os_port" type="number" min="1" max="65535" placeholder="9000">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">Region</label>
+        <input class="form-control" id="os_region" placeholder="us-east-1" autocomplete="off">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">寻址方式</label>
+        <select class="form-select" id="os_addressing">
+          <option value="">跟随厂商默认</option>
+          <option value="path">path（MinIO / 自建网关）</option>
+          <option value="virtual">virtual host（S3 / OSS）</option>
+          <option value="auto">auto（由客户端判定）</option>
+        </select>
+      </div>
+
+      <div class="col-md-3">
+        <label class="form-label">AccessKey <span class="text-danger">*</span></label>
+        <input class="form-control" id="os_ak" autocomplete="off">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">SecretKey <span class="text-danger">*</span></label>
+        <input class="form-control" id="os_sk" type="password" autocomplete="new-password">
+        <div class="form-text" id="os_sk_hint">编辑任务时留空表示沿用原密钥</div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">桶 Bucket <span class="text-danger">*</span></label>
+        <div class="input-group">
+          <input class="form-control" id="os_bucket" placeholder="aidbm-backup" autocomplete="off">
+          <button class="btn btn-outline-secondary" id="osListBucketsBtn" type="button" title="真实列桶（验证密钥权限）">
+            <i class="bi bi-list-ul"></i> 列举桶</button>
+        </div>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">只保护前缀（可选）</label>
+        <input class="form-control" id="os_prefix" placeholder="logs/2026" autocomplete="off">
+      </div>
+
+      <div class="col-md-3">
+        <label class="form-label d-block">传输选项</label>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="checkbox" id="os_versions">
+          <label class="form-check-label" for="os_versions" title="捕获对象的全部历史版本（需桶已开启版本控制）">捕获历史版本</label>
+        </div>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="checkbox" id="os_secure">
+          <label class="form-check-label" for="os_secure">HTTPS</label>
+        </div>
+        <div class="form-check form-check-inline">
+          <input class="form-check-input" type="checkbox" id="os_verify_ssl">
+          <label class="form-check-label" for="os_verify_ssl">校验证书</label>
+        </div>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">并发传输</label>
+        <input class="form-control" id="os_workers" type="number" min="1" max="64" value="8">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">允许部分对象失败</label>
+        <div class="form-check form-switch mt-1">
+          <input class="form-check-input" type="checkbox" id="os_allow_partial">
+          <label class="form-check-label small text-muted" for="os_allow_partial">
+            默认关闭：任一个对象传输失败即整次备份判失败（不把残缺数据包装成成功）</label>
+        </div>
+      </div>
+
+      <div class="col-12"><hr class="my-1"></div>
+
+      <div class="col-md-3">
+        <label class="form-label">任务名称 <span class="text-danger">*</span></label>
+        <input class="form-control" id="os_task_name" placeholder="如：对象存储-业务附件桶">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">业务系统 <span class="text-danger">*</span></label>
+        <input class="form-control" id="os_biz_system" placeholder="如：OA 办公系统">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">备份类型</label>
+        <select class="form-select" id="os_backup_type">
+          <option value="full">全量（首次必选）</option>
+          <option value="incremental">增量（只传变化对象）</option>
+        </select>
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">调度方式</label>
+        <select class="form-select" id="os_schedule">
+          <option value="none">不调度（手动）</option>
+          <option value="daily">每天</option>
+          <option value="weekly">每周一</option>
+          <option value="cron">自定义 cron</option>
+        </select>
+      </div>
+      <div class="col-md-2" id="os_schedule_time_box">
+        <label class="form-label">执行时间</label>
+        <input class="form-control" id="os_schedule_time" type="time" value="02:00">
+      </div>
+      <div class="col-md-4 d-none" id="os_schedule_cron_box">
+        <label class="form-label">cron 表达式（分 时 日 月 周）</label>
+        <input class="form-control" id="os_schedule_cron" placeholder="0 2 * * *">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label">保留天数</label>
+        <input class="form-control" id="os_retention" type="number" min="0" value="30">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label">任务默认恢复目标（可选）</label>
+        <input class="form-control form-control-sm mb-1" id="os_restore_bucket_def" placeholder="默认恢复桶（留空=原桶）">
+        <input class="form-control form-control-sm" id="os_restore_prefix_def" placeholder="默认恢复前缀（留空=原路径）">
+      </div>
+      <div class="col-md-2 d-flex align-items-end">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="os_enabled" checked>
+          <label class="form-check-label" for="os_enabled">启用任务</label>
+        </div>
+      </div>
+
+      <div class="col-12 d-flex flex-wrap gap-2 align-items-center">
+        <button class="btn btn-outline-primary btn-sm" id="osTestBtn"><i class="bi bi-wifi"></i> 测试连接</button>
+        <button class="btn btn-outline-secondary btn-sm" id="osPreviewBtn"><i class="bi bi-search"></i> 预扫描</button>
+        <button class="btn btn-primary btn-sm" id="osSaveTaskBtn" data-perm="backup.task.manage">
+          <i class="bi bi-save"></i> 保存为备份任务</button>
+        <button class="btn btn-outline-secondary btn-sm d-none" id="osCancelEditBtn">取消编辑</button>
+        <span class="ms-auto small text-muted" id="osConnStatus"></span>
+      </div>
+      <div class="col-12 d-none" id="osProbeBox"><div class="alert alert-light border mb-0 small" id="osProbeResult"></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-hdd-network"></i> 备份任务</span>
+    <span class="text-muted small" id="osTaskSummary"></span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead><tr>
+          <th style="width:26%">任务</th><th>桶 / 前缀</th><th>端点</th><th>类型 / 调度</th>
+          <th>最近备份</th><th class="text-end" style="width:210px">操作</th>
+        </tr></thead>
+        <tbody id="osTaskTable"><tr><td colspan="6" class="text-center text-muted py-4">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <span><i class="bi bi-archive"></i> 备份记录（对象存储）</span>
+    <div class="d-flex gap-2">
+      <input class="form-control form-control-sm" id="osRecordSearch" placeholder="按任务名 / 桶过滤" style="width:220px">
+      <button class="btn btn-outline-secondary btn-sm" id="osRecordReloadBtn"><i class="bi bi-arrow-clockwise"></i></button>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0 align-middle">
+        <thead><tr>
+          <th style="width:150px">时间</th><th>任务</th><th>桶 / 前缀</th><th>类型</th>
+          <th>产物</th><th>状态</th><th class="text-end" style="width:250px">操作</th>
+        </tr></thead>
+        <tbody id="osRecordTable"><tr><td colspan="7" class="text-center text-muted py-4">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- 对象清单（支持对象级细粒度恢复） -->
+<div class="modal fade" id="osObjectsModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-list-columns-reverse"></i> 归档内对象清单
+          <span class="text-muted small ms-2" id="osObjSubtitle"></span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2 mb-2" id="osObjSummary"></div>
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+          <input class="form-control form-control-sm" id="osObjSearch" placeholder="在当前页内按 Key 过滤" style="width:260px">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="osObjSelectAll">
+            <label class="form-check-label small" for="osObjSelectAll">全选本页</label>
+          </div>
+          <span class="small text-muted" id="osObjSelectedInfo">已选 0 个</span>
+          <div class="ms-auto d-flex align-items-center gap-2">
+            <button class="btn btn-outline-secondary btn-sm" id="osObjPrev">上一页</button>
+            <span class="small text-muted" id="osObjPageInfo">-</span>
+            <button class="btn btn-outline-secondary btn-sm" id="osObjNext">下一页</button>
+          </div>
+        </div>
+        <div class="table-responsive" style="max-height:52vh">
+          <table class="table table-sm table-hover align-middle">
+            <thead><tr>
+              <th style="width:36px"></th><th>对象 Key</th><th style="width:110px">大小</th>
+              <th style="width:150px">版本</th><th style="width:170px">最后修改</th><th style="width:130px">SHA256</th>
+            </tr></thead>
+            <tbody id="osObjTable"><tr><td colspan="6" class="text-center text-muted py-4">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer d-flex flex-wrap gap-2">
+        <span class="small text-muted me-auto" id="osObjFooterHint"></span>
+        <button class="btn btn-outline-primary btn-sm" id="osObjRestoreSelected" disabled>
+          <i class="bi bi-arrow-counterclockwise"></i> 恢复选中对象</button>
+        <button class="btn btn-primary btn-sm" id="osObjRestoreAll">
+          <i class="bi bi-arrow-counterclockwise"></i> 整包恢复</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 恢复参数 -->
+<div class="modal fade" id="osRestoreModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-arrow-counterclockwise"></i> 对象存储恢复</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-light border small" id="osRestoreScope"></div>
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label">目标桶</label>
+            <input class="form-control" id="os_restore_bucket" placeholder="默认回到原桶（可填新桶做演练）">
+          </div>
+          <div class="col-12">
+            <label class="form-label">目标前缀（可选）</label>
+            <input class="form-control" id="os_restore_prefix" placeholder="如 restore/2026-09-19，留空表示原路径">
+          </div>
+          <div class="col-md-7">
+            <label class="form-label">覆盖策略</label>
+            <select class="form-select" id="os_restore_overwrite">
+              <option value="if_newer">if_newer（目标已存在且一致则跳过，推荐）</option>
+              <option value="always">always（强制覆盖）</option>
+              <option value="never">never（只补缺失对象，不覆盖）</option>
+            </select>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label">并发</label>
+            <input class="form-control" id="os_restore_workers" type="number" min="1" max="64" value="8">
+          </div>
+          <div class="col-12">
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="os_restore_create_bucket" checked>
+              <label class="form-check-label" for="os_restore_create_bucket">目标桶不存在时自动创建</label>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="os_restore_apply_deleted" checked>
+              <label class="form-check-label" for="os_restore_apply_deleted">
+                回放删除事件（整包恢复时，把备份期内已删除的对象在目标桶一并删除）</label>
+            </div>
+          </div>
+        </div>
+        <div class="mt-3 d-none" id="osRestoreResultBox">
+          <div class="alert mb-0 small" id="osRestoreResult"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary" id="osRestoreRunBtn"><i class="bi bi-play-fill"></i> 开始恢复</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/object_storage.js?v=2026091901"></script>
+{% endblock %}

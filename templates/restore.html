@@ -53,6 +53,10 @@
           <label class="btn btn-outline-success" for="r_type_file">
             <i class="bi bi-folder2-open"></i> 文件恢复 <span class="badge bg-secondary ms-2" id="r_file_count">0</span>
           </label>
+          <input type="radio" class="btn-check" name="r_type" id="r_type_obj" value="obj" onchange="onRestoreTypeChange()">
+          <label class="btn btn-outline-info" for="r_type_obj">
+            <i class="bi bi-cloud-arrow-down"></i> 对象存储恢复 <span class="badge bg-secondary ms-2" id="r_obj_count">0</span>
+          </label>
         </div>
       </div>
     </div>
@@ -158,6 +162,48 @@
       <div class="col-md-6 mt-2">
         <label class="form-label">目标库 / 实例</label>
         <input class="form-control" id="r_target_db_remote" placeholder="指定目标数据库名">
+      </div>
+    </div>
+
+    <!-- ===== 对象存储恢复：目标桶 + 前缀 + 覆盖策略 + 颗粒级 key ===== -->
+    <div class="row g-3 mb-3" id="r_obj_row" style="display:none">
+      <div class="col-md-12">
+        <div class="alert alert-info py-2 mb-2 small">
+          <i class="bi bi-info-circle"></i>
+          对象存储恢复以「桶 + 前缀」为目标：可回写到原桶（回滚）、异桶（迁移）、
+          或指定前缀（并行演练）。支持颗粒级恢复——只回放指定对象 key。
+        </div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">目标桶 *</label>
+        <input class="form-control font-monospace" id="r_obj_bucket" placeholder="留空=回写到源桶">
+        <div class="form-text">留空时回写到备份任务配置的源桶</div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">目标前缀</label>
+        <input class="form-control font-monospace" id="r_obj_prefix" placeholder="如 restored/2026-09-19">
+        <div class="form-text">留空=保持原始 key 结构</div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label">覆盖策略</label>
+        <select class="form-select" id="r_obj_overwrite">
+          <option value="if_newer" selected>仅覆盖较新的对象（if_newer）</option>
+          <option value="always">总是覆盖（always）</option>
+          <option value="skip">跳过已存在（skip）</option>
+        </select>
+      </div>
+      <div class="col-md-8 mt-2">
+        <label class="form-label">颗粒级恢复：仅回放以下对象 key</label>
+        <textarea class="form-control font-monospace" id="r_obj_keys" rows="2"
+                  placeholder="留空=恢复全部对象；多个 key 用逗号或换行分隔，如 docs/a.txt,img/b.png"></textarea>
+      </div>
+      <div class="col-md-4 mt-2 d-flex align-items-end">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="r_obj_apply_deleted">
+          <label class="form-check-label" for="r_obj_apply_deleted">
+            应用删除（备份后删除的对象在目标侧一并删除）
+          </label>
+        </div>
       </div>
     </div>
 

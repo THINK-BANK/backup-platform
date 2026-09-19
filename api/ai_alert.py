@@ -31,11 +31,14 @@ def _predictor():
 @login_required
 def api_list_predictions():
     metric = request.args.get("metric")
-    limit = request.args.get("limit", default=200, type=int)
-    rows = models.list_alert_predictions(metric=metric, limit=limit)
+    default_size = 100 if request.path.startswith(contract.V1_PREFIX) else 200
+    _page, size, offset = contract.pagination_args(default_size=default_size,
+                                                   max_size=500)
+    rows = models.list_alert_predictions(metric=metric, limit=size + offset)
     # 将 basis（JSON str）解析为 list[str]，predicted_content 确保非 None
     parsed = [models._ap_to_dict(r) for r in rows]
-    return jsonify({"predictions": parsed})
+    return contract.list_response(parsed[offset:offset + size], total=len(parsed),
+                                  legacy={"predictions": parsed})
 
 
 @api_bp.route("/alerts/run", methods=["POST"])

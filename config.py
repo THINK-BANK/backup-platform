@@ -20,6 +20,11 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).resolve().parent
 
+# ---------- 产品标识 ----------
+# 产品正式名称与版本（对外 API 文档、健康检查、报告落款统一取这里，避免各处硬编码）。
+PLATFORM_NAME = os.environ.get("AIDBM_NAME", "AIDBM")
+PLATFORM_VERSION = os.environ.get("AIDBM_VERSION", "1.4.11")
+
 # ---------- 路径 ----------
 BACKUP_ROOT = os.environ.get("BACKUP_ROOT", str(BASE_DIR / "backups"))
 
@@ -125,14 +130,14 @@ COMPRESS_BY_DEFAULT = os.environ.get("COMPRESS_BY_DEFAULT", "true").lower() == "
 # ---------- 支持的数据库类型 ----------
 SUPPORTED_DB_TYPES = [
     "mysql", "postgresql", "oracle", "kingbase", "dameng",
-    "redis", "mongodb", "neo4j", "vm",
+    "redis", "mongodb", "neo4j", "vm", "object_storage",
 ]
 
 # 各类型默认端口（供前端预填）
 DEFAULT_PORTS = {
     "mysql": 3306, "mariadb": 3306, "postgresql": 5432, "oracle": 1521, "kingbase": 54321,
     "dameng": 5236, "sqlserver": 1433, "redis": 6379, "mongodb": 27017,
-    "neo4j": 7687,
+    "neo4j": 7687, "object_storage": 9000,
 }
 
 # 各类型显示名
@@ -141,7 +146,7 @@ DB_DISPLAY_NAMES = {
     "oracle": "Oracle", "kingbase": "KingBase",
     "dameng": "DM 达梦", "sqlserver": "SQL Server",
     "redis": "Redis", "mongodb": "MongoDB", "file": "文件",
-    "neo4j": "Neo4j", "vm": "虚拟机",
+    "neo4j": "Neo4j", "vm": "虚拟机", "object_storage": "对象存储",
 }
 
 # 备份方式（backup_type）中文映射：full / incremental / differential
@@ -227,6 +232,13 @@ RT_ALLOW_SIMULATED_FALLBACK = (
 # 上云聚合（缓解对象存储写放大）
 RT_UPLOAD_BATCH_MB = int(os.environ.get("RT_UPLOAD_BATCH_MB", "64"))
 RT_UPLOAD_INTERVAL_MIN = int(os.environ.get("RT_UPLOAD_INTERVAL_MIN", "15"))
+
+# ========== AI 智能助手（自然语言 Agent）执行策略 ==========
+# auto（默认）：按风险分级授权——备份、快速巡检等低风险操作由用户自然语言指令直接执行，
+#              执行后回传真实结果；全量巡检、恢复/删除类高风险操作仍需用户二次确认。
+# always_confirm：所有执行类操作都必须人工确认（严格审批环境的保守模式）。
+# auto_execute：不做任何确认拦截（仅供自动化测试，生产环境不建议）。
+AI_AGENT_EXEC_MODE = os.environ.get("AI_AGENT_EXEC_MODE", "auto").strip().lower()
 
 # 容错
 RT_MAX_RESTART = int(os.environ.get("RT_MAX_RESTART", "5"))

@@ -42,6 +42,49 @@ def _enc_secret(v: str) -> str:
     return db.encrypt_secret(v) if v else ""
 
 
+def _migratable_types() -> list:
+    """可迁移的库型清单 = 同步引擎已注册的插件类型。
+
+    迁移阶段复用 core.sync.engine（结构+全量），因此"能迁移的类型"就是
+    "同步插件注册表里的类型"，不在别处再维护一份硬编码列表。
+    """
+    try:
+        from core.sync.plugins import registry
+        return registry.available()
+    except Exception:  # noqa: BLE001 - 注册表异常时退化为空（调用方给明确报错）
+        return []
+
+
+def _scalar(conn, sql: str):
+    """执行单值查询（统计用，连接由调用方管理）。"""
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        row = cur.fetchone()
+        return row[0] if row else 0
+    finally:
+        try:
+            cur.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _stats_connect(db_type: str, host: str, port, db: str, user: str, pwd: str):
+    """建立「源对象统计」用的直连：原生驱动优先，SQL Server 走 JDBC 兜底。
+
+    SQL Server 没有原生 Python 驱动（pymssql 不可用），只能走平台自带的
+    JDBC 通道；其余类型统一走 core.native_conn，避免每个库型各写一段
+    import pymysql / psycopg2（旧实现只覆盖 MySQL 与 PG，Oracle/达梦/
+    SQL Server 源在预检查里被统计成 0 张表，直接被判「没有可迁移的业务表」，
+    迁移根本进不去）。
+    """
+    from core import native_conn
+    if db_type in native_conn.NATIVE_DB_TYPES:
+        return native_conn.connect(db_type, host, port, db, user, pwd, timeout=8)
+    from core import jdbc
+    return jdbc.connect(db_type, host, port, db, user, pwd, timeout=8)
+
+
 def _dec_secret(v: str) -> str:
     try:
         return db.decrypt_secret(v or "")
@@ -83,6 +126,15 @@ class DbMigrationEngine:
                 if not (data.get(f"{side}_{f}") or "").strip():
                     raise ValueError(f"{side} 端 {f} 缺失（src_db_type/src_host/src_db_name"
                                      "/tgt_db_type/tgt_host/tgt_db_name 必填）")
+        # 类型必须在同步引擎已注册的插件里（迁移阶段复用同步引擎执行），
+        # 否则会在跑到一半时才失败——这里提前挡掉并列出支持的类型。
+        supported = _migratable_types()
+        for side in ("src", "tgt"):
+            t = (data.get(f"{side}_db_type") or "").strip().lower()
+            if supported and t not in supported:
+                raise ValueError(
+                    f"{side} 端数据库类型 {t} 不支持迁移"
+                    f"（已支持: {', '.join(supported)}）")
         types = data.get("migrate_types") or ["structure", "full", "verify"]
         if isinstance(types, str):
             types = [t.strip() for t in types.split(",") if t.strip()]
@@ -257,88 +309,189 @@ class DbMigrationEngine:
             result["checks"].append({"item": "目标库连通性", "ok": True, "message": msg2})
         if not target_db_ready:
             return result
-        # 源对象统计（表数量）
+        # 源对象统计（表数量/行数）
         stats = self._source_stats(plan)
         result["source_tables"] = stats.get("tables", 0)
         result["source_rows"] = stats.get("rows", 0)
-        result["checks"].append({
-            "item": "源对象统计", "ok": stats.get("tables", 0) > 0,
-            "message": f"表 {stats.get('tables', 0)} 张 / 约 {stats.get('rows', 0)} 行"})
-        result["ok"] = result["source_tables"] > 0
-        if not result["ok"]:
-            result["message"] = "源库没有可迁移的业务表"
+        note = stats.get("note") or ""
+        if note:
+            # 统计不到（驱动缺失/权限不足/连不上）≠ 源库没有表：如实写明原因，
+            # 但不阻断——迁移阶段的表清单由同步引擎按源库实时获取，不依赖这里。
+            result["checks"].append({
+                "item": "源对象统计", "ok": False,
+                "message": f"{note}（不阻断：迁移阶段按源库实际表执行）"})
+            result["source_stats_note"] = note
+            result["ok"] = True
+        else:
+            result["checks"].append({
+                "item": "源对象统计", "ok": result["source_tables"] > 0,
+                "message": f"表 {result['source_tables']} 张 / 约 {result['source_rows']} 行"})
+            result["ok"] = result["source_tables"] > 0
+            if not result["ok"]:
+                result["message"] = "源库没有可迁移的业务表"
         result["finished_at"] = db.now_iso()
         return result
 
     def _ensure_target_db(self, plan: dict) -> tuple:
-        """目标库不存在时自动创建（MySQL/MariaDB 目标）。"""
-        if plan["tgt_db_type"].lower() not in ("mysql", "mariadb"):
-            return False, (f"目标类型 {plan['tgt_db_type']} 不支持自动建库，"
-                           "请先手工创建目标库")
-        try:
-            import pymysql
-            conn = pymysql.connect(
-                host=plan["tgt_host"], port=int(plan["tgt_port"] or 3306),
-                user=plan["tgt_username"], password=plan["tgt_password"],
-                connect_timeout=5, charset="utf8mb4")
-        except Exception as e:
-            return False, f"目标实例连接失败: {e}"
-        try:
-            name = plan["tgt_db_name"]
-            if not re.match(r"^[A-Za-z0-9_$]+$", name):
+        """目标库不存在时自动创建。
+
+        - MySQL/MariaDB：``CREATE DATABASE \```name\`` CHARACTER SET utf8mb4``；
+        - PostgreSQL/金仓：连维护库（postgres/test）执行 ``CREATE DATABASE "name"``
+          （PG 系建库不能在事务块里，``native_conn`` 已置 autocommit）；
+        - Oracle/达梦/SQL Server：库/表空间/文件组语义复杂且属生产敏感操作，
+          不擅自创建，如实提示"请先手工创建目标库"。
+
+        真实缺陷背景：原先只有 MySQL/MariaDB 支持自动建库，其它类型一律返回
+        "不支持自动建库"→预检查直接不过；而界面上这些类型此前又根本选不到。
+        """
+        tgt_type = (plan.get("tgt_db_type") or "").lower()
+        name = plan.get("tgt_db_name") or ""
+        host = plan.get("tgt_host") or ""
+        port = int(plan.get("tgt_port") or 0) or None
+        user = plan.get("tgt_username") or ""
+        pwd = plan.get("tgt_password") or ""
+
+        if tgt_type in ("mysql", "mariadb"):
+            try:
+                import pymysql
+                conn = pymysql.connect(
+                    host=host, port=port or 3306,
+                    user=user, password=pwd,
+                    connect_timeout=5, charset="utf8mb4")
+            except Exception as e:  # noqa: BLE001
+                return False, f"目标实例连接失败: {e}"
+            try:
+                if not re.match(r"^[A-Za-z0-9_$]+$", name):
+                    return False, "目标库名含特殊字符，请手工创建"
+                with conn.cursor() as cur:
+                    cur.execute("SHOW DATABASES LIKE %s", (name,))
+                    if cur.fetchone():
+                        return True, "目标库已存在"
+                    cur.execute(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4")
+                    conn.commit()
+                    return True, f"目标库 {name} 已自动创建"
+            except Exception as e:  # noqa: BLE001
+                return False, f"自动建库失败: {e}"
+            finally:
+                conn.close()
+
+        if tgt_type in ("postgresql", "kingbase"):
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_$]*$", name):
                 return False, "目标库名含特殊字符，请手工创建"
-            with conn.cursor() as cur:
-                cur.execute("SHOW DATABASES LIKE %s", (name,))
-                if cur.fetchone():
-                    return True, "目标库已存在"
-                cur.execute(f"CREATE DATABASE `{name}` CHARACTER SET utf8mb4")
-                conn.commit()
+            from core import native_conn
+            maint = "postgres" if tgt_type == "postgresql" else "test"
+            try:
+                conn = native_conn.connect(tgt_type, host, port, maint, user, pwd,
+                                           timeout=8)
+            except Exception as e:  # noqa: BLE001
+                return False, f"目标实例连接失败: {e}"
+            try:
+                safe = name.replace("'", "''")
+                cur = conn.cursor()
+                try:
+                    # 金仓不同版本的字典表名不同（pg_database / sys_database），
+                    # 逐个探测，避免因版本差异误判"库不存在"而重复建库。
+                    for sql in (f"SELECT 1 FROM pg_database WHERE datname='{safe}'",
+                                f"SELECT 1 FROM sys_database WHERE datname='{safe}'"):
+                        try:
+                            cur.execute(sql)
+                            if cur.fetchone():
+                                return True, "目标库已存在"
+                        except Exception:  # noqa: BLE001 - 换下一个字典表
+                            continue
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                cur = conn.cursor()
+                try:
+                    cur.execute(f'CREATE DATABASE "{name}"')
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:  # noqa: BLE001
+                        pass
                 return True, f"目标库 {name} 已自动创建"
-        except Exception as e:
-            return False, f"自动建库失败: {e}"
-        finally:
-            conn.close()
+            except Exception as e:  # noqa: BLE001
+                return False, f"自动建库失败: {e}"
+            finally:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return False, (f"目标类型 {plan.get('tgt_db_type')} 不支持自动建库，"
+                       "请先手工创建目标库")
 
     @staticmethod
     def _source_stats(plan: dict) -> dict:
-        """源库对象统计：表数量与总行数（原生驱动直连）。"""
-        db_type = plan["src_db_type"].lower()
-        tables, total = 0, 0
+        """源库对象统计：表数量与总行数（覆盖全部已支持库型）。
+
+        返回 ``{"tables": n, "rows": n, "note": "..."}``；``note`` 非空表示
+        "统计不到"（驱动缺失/权限不足/连不上），调用方据此**不阻断**迁移。
+        行数取自各库的系统统计信息（information_schema.table_rows /
+        pg_stat_user_tables / all_tables.num_rows / sys.partitions），是**采样值**，
+        只用于预检查展示与迁移前后对照；迁移结果以 verify 阶段逐表实时
+        COUNT(*) 为准。
+        """
+        db_type = (plan.get("src_db_type") or "").lower()
+        db_name = (plan.get("src_db_name") or "").strip()
+        if not db_type or not db_name:
+            return {"tables": 0, "rows": 0, "note": "源类型或库名缺失"}
+        host = plan.get("src_host") or ""
+        port = int(plan.get("src_port") or 0) or None
+        user = (plan.get("src_username") or "").strip()
+        pwd = plan.get("src_password") or ""
+
+        def q(v: str) -> str:
+            return (v or "").replace("'", "''")
+
+        # Oracle/达梦按"用户 schema"统计，用户名缺省时用库名
+        owner = q(user or db_name)
         if db_type in ("mysql", "mariadb"):
-            import pymysql
-            conn = pymysql.connect(
-                host=plan["src_host"], port=int(plan["src_port"] or 3306),
-                user=plan["src_username"], password=plan["src_password"],
-                database=plan["src_db_name"], connect_timeout=5, charset="utf8mb4")
+            sqls = (
+                "SELECT COUNT(*) FROM information_schema.tables"
+                f" WHERE table_schema='{q(db_name)}' AND table_type='BASE TABLE'",
+                "SELECT IFNULL(SUM(table_rows),0) FROM information_schema.tables"
+                f" WHERE table_schema='{q(db_name)}'")
+        elif db_type in ("postgresql", "kingbase"):
+            # 排除系统 schema，只数真实业务基表
+            sqls = (
+                "SELECT COUNT(*) FROM information_schema.tables"
+                " WHERE table_schema NOT IN ('pg_catalog','information_schema',"
+                "'sys_catalog','sys') AND table_type='BASE TABLE'",
+                "SELECT COALESCE(SUM(n_live_tup),0) FROM pg_stat_user_tables")
+        elif db_type in ("oracle", "dameng"):
+            sqls = (
+                f"SELECT COUNT(*) FROM all_tables WHERE owner=UPPER('{owner}')",
+                f"SELECT NVL(SUM(num_rows),0) FROM all_tables WHERE owner=UPPER('{owner}')")
+        elif db_type == "sqlserver":
+            sqls = (
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES"
+                f" WHERE TABLE_CATALOG='{q(db_name)}' AND TABLE_TYPE='BASE TABLE'",
+                "SELECT ISNULL(SUM(p.rows),0) FROM sys.partitions p"
+                " JOIN sys.objects o ON o.object_id=p.object_id"
+                " WHERE o.type='U' AND p.index_id IN (0,1)")
+        else:
+            return {"tables": 0, "rows": 0,
+                    "note": f"暂不支持统计该源类型（{db_type}）"}
+
+        try:
+            conn = _stats_connect(db_type, host, port, db_name, user, pwd)
+        except Exception as e:  # noqa: BLE001 - 连接失败不算致命，转成 note
+            return {"tables": 0, "rows": 0, "note": f"源库连接失败: {str(e)[:200]}"}
+        try:
+            tables = int(_scalar(conn, sqls[0]) or 0)
+            rows = int(_scalar(conn, sqls[1]) or 0)
+            return {"tables": tables, "rows": rows}
+        except Exception as e:  # noqa: BLE001 - 统计 SQL 失败同样不阻断
+            return {"tables": 0, "rows": 0, "note": f"源对象统计失败: {str(e)[:200]}"}
+        finally:
             try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) FROM information_schema.tables"
-                                " WHERE table_schema=%s", (plan["src_db_name"],))
-                    tables = int(cur.fetchone()[0])
-                    cur.execute("SELECT IFNULL(SUM(table_rows),0)"
-                                " FROM information_schema.tables WHERE table_schema=%s",
-                                (plan["src_db_name"],))
-                    total = int(cur.fetchone()[0])
-            finally:
                 conn.close()
-        elif db_type == "postgresql":
-            import psycopg2
-            conn = psycopg2.connect(
-                host=plan["src_host"], port=int(plan["src_port"] or 5432),
-                user=plan["src_username"], password=plan["src_password"],
-                dbname=plan["src_db_name"], connect_timeout=5)
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT COUNT(*) FROM information_schema.tables"
-                                " WHERE table_schema='public' AND table_type='BASE TABLE'")
-                    tables = int(cur.fetchone()[0])
-                    # COALESCE 为 SQL 标准写法（PG/金仓均支持）；
-                    # 旧实现误用 MySQL 方言 IFNULL，导致 PG 源预检查直接报错。
-                    cur.execute("SELECT COALESCE(SUM(n_live_tup),0) FROM pg_stat_user_tables")
-                    total = int(cur.fetchone()[0])
-            finally:
-                conn.close()
-        return {"tables": tables, "rows": total}
+            except Exception:  # noqa: BLE001
+                pass
 
     def _phase_migrate(self, plan: dict, with_structure: bool) -> dict:
         """结构迁移 + 全量迁移：复用同步引擎（create_if_not_exists + 全库）。"""

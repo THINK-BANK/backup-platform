@@ -7,7 +7,7 @@ from flask import request, jsonify, send_file, Response
 
 from auth import login_required
 from core import models, db, reports
-from . import api_bp, safe_download_path
+from . import api_bp, contract, safe_download_path
 
 
 # 超长 / 超频 默认阈值（秒 / 分钟），可由 query string 覆盖
@@ -98,14 +98,21 @@ def list_records():
     task_id = request.args.get("task_id", type=int)
     policy_id = request.args.get("policy_id", type=int)
     keyword = request.args.get("keyword", type=str)
-    # 支持 limit 分页（上限 500，避免一次性拉全表拖垮平台与浏览器）
-    limit = request.args.get("limit", type=int) or 500
-    limit = max(1, min(int(limit), 500))
+    # db_type 过滤：专页（如对象存储备份页）只关心自己这一类记录，
+    # 避免前端拉全量再逐条过滤（历史上前后端都存在这种低效写法）。
+    db_type = (request.args.get("db_type") or "").strip() or None
+    # 统一分页（规范 page/size，兼容 limit/offset，上限 500）；
+    # v1 默认 100/页，兼容路径沿用历史默认 500 以免影响已有前端。
+    default_size = 100 if request.path.startswith(contract.V1_PREFIX) else 500
+    _page, size, offset = contract.pagination_args(default_size=default_size,
+                                                   max_size=500)
     rows = models.list_records(task_id=task_id, keyword=keyword, policy_id=policy_id,
-                               limit=limit)
+                               db_type=db_type, limit=size, offset=offset)
     for r in rows:
         r["size_human"] = db.human_size(r.get("size_bytes") or 0)
-    return jsonify(rows)
+    total = models.count_records(task_id=task_id, keyword=keyword,
+                                 policy_id=policy_id, db_type=db_type)
+    return contract.list_response(rows, total=total)
 
 
 @api_bp.route("/records/<int:record_id>", methods=["GET"])

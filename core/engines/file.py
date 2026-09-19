@@ -181,13 +181,25 @@ def _get_ssh_client(host_key: str, password: str = None):
         user, hostname = "root", addr
 
     # 未传入密码则从 DB 查询
+    priv_key = ""
     if not password:
         row = db.query_one(
-            "SELECT password FROM ssh_hosts WHERE host_key=? LIMIT 1",
+            "SELECT password, auth_type, private_key FROM ssh_hosts "
+            "WHERE host_key=? LIMIT 1",
             (host_key,),
         )
         if row:
             password = db.decrypt_secret(row["password"] or "")
+            try:   # 兼容历史表缺列的场景
+                priv_key = (row["private_key"] or "").strip()
+            except Exception:
+                priv_key = ""
+        key_file = priv_key if priv_key and os.path.isfile(priv_key) else None
+    else:
+        key_file = None
+    # 无口令时才启用 SSH 公钥/agent 认证（如 ~/.ssh/id_rsa、指定私钥文件）。
+    # 有口令时保持原行为，避免对既有纳管主机产生任何影响。
+    no_password = not password
 
     with _ssh_lock:
         existing = _ssh_pool.get(host_key)
@@ -214,8 +226,9 @@ def _get_ssh_client(host_key: str, password: str = None):
         try:
             client.connect(
                 hostname, port=port, username=user,
-                password=password, timeout=60,
-                allow_agent=False, look_for_keys=False,
+                password=password or None, timeout=60,
+                key_filename=key_file,
+                allow_agent=no_password, look_for_keys=no_password,
             )
             last_exc = None
             break

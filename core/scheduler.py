@@ -486,6 +486,12 @@ def _execute_backup_core(task: dict, bt, operator: str = None) -> dict:
     return models.get_record(rec_id)
 
 
+# 对象存储恢复的可选参数白名单（由「数据恢复 → 对象存储恢复」表单提交）。
+# 走白名单而不是整体 **kwargs 展开，避免把对象存储专有参数误传给其它引擎。
+_OBJ_RESTORE_KEYS = ("target_bucket", "target_prefix", "overwrite",
+                     "apply_deleted", "restore_keys")
+
+
 def run_restore_now(record_id: int, target_host: str = None,
                     target_host_id: int = None, target_db: str = None,
                     target_port: int = None,
@@ -494,7 +500,15 @@ def run_restore_now(record_id: int, target_host: str = None,
                     target_host_password: str = None,
                     target_time: str = None,
                     pitr_restore_dir: str = None,
-                    tables: list = None) -> Optional[dict]:
+                    tables: list = None,
+                    restore_options: dict = None) -> Optional[dict]:
+    """立即执行一次恢复。
+
+    ``restore_options`` 是**对象存储恢复**的专有参数（目标桶 / 前缀 / 覆盖
+    策略 / 是否应用删除 / 颗粒级 key 清单）。对象存储没有"主机 + 目录"概念，
+    恢复目标就是另一个桶（或同桶的前缀），因此不能复用数据库/文件恢复的
+    target_host/target_db 字段，需单独透传给 ObjectStorageEngine.restore。
+    """
     rec = models.get_record(record_id)
     if not rec:
         return None
@@ -566,13 +580,19 @@ def run_restore_now(record_id: int, target_host: str = None,
         _env_token = _rd.set_task_env_export(_rd.task_env_export(task))
         try:
             with op.step("执行恢复"):
+                # 对象存储恢复参数白名单透传（见 _OBJ_RESTORE_KEYS 注释）
+                _obj_kw = {k: v for k, v in (restore_options or {}).items()
+                           if k in _OBJ_RESTORE_KEYS and v not in (None, "", [])}
+                if _obj_kw:
+                    op.info("对象存储恢复参数: %s", _obj_kw)
                 result = engine.run_restore(rec["backup_path"], target_host=target_host,
                                         target_host_info=target_host_info,
                                         target_db=target_db,
                                         target_port=target_port,
                                         target_time=target_time,
                                         pitr_restore_dir=pitr_restore_dir,
-                                        tables=tables)
+                                        tables=tables,
+                                        **_obj_kw)
         finally:
             _rd.reset_task_env_export(_env_token)
         detail_log_lines.append(f"[引擎结果] success={result.success}, status={getattr(result, 'status', '-')}")

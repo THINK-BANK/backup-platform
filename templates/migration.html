@@ -44,10 +44,10 @@
             <div class="fw-bold mb-2 text-primary">源端（生产库）</div>
             <div class="mb-2">
               <label class="form-label small">类型</label>
-              <select class="form-select form-select-sm" id="dm_src_db_type">
-                <option value="mysql">MySQL / MariaDB</option>
-                <option value="postgresql">PostgreSQL</option>
-              </select>
+              <!-- 选项由 JS 按平台真实支持的类型动态填充（原先硬编码
+                   mysql/postgresql 两项，MariaDB/金仓/达梦/Oracle/SQLServer
+                   等已支持的类型用户根本选不到），见 app.js dmFillTypeSelects -->
+              <select class="form-select form-select-sm" id="dm_src_db_type"></select>
             </div>
             <div class="row g-2">
               <div class="col-7"><label class="form-label small">主机 *</label>
@@ -68,10 +68,7 @@
             <div class="fw-bold mb-2 text-success">目标端（新库）</div>
             <div class="mb-2">
               <label class="form-label small">类型</label>
-              <select class="form-select form-select-sm" id="dm_tgt_db_type">
-                <option value="mysql">MySQL / MariaDB</option>
-                <option value="postgresql">PostgreSQL</option>
-              </select>
+              <select class="form-select form-select-sm" id="dm_tgt_db_type"></select>
             </div>
             <div class="row g-2">
               <div class="col-7"><label class="form-label small">主机 *</label>
@@ -85,7 +82,7 @@
               <div class="col-8"><label class="form-label small">密码</label>
                 <input type="password" class="form-control form-control-sm" id="dm_tgt_password"></div>
             </div>
-            <div class="mt-2"><label class="form-label small">数据库 *（MySQL 不存在将自动创建）</label>
+            <div class="mt-2"><label class="form-label small" id="dm_tgt_db_name_label">数据库 *（不存在将自动创建）</label>
               <input class="form-control form-control-sm" id="dm_tgt_db_name" placeholder="如 bpm1_new"></div>
           </div>
         </div>

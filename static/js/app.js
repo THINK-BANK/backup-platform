@@ -2042,11 +2042,15 @@
     // 过滤成功的记录
     const ok = recs.filter((r) => r.status === "success" || r.status === "simulated");
     window.RESTORE_RECORDS = ok;
-    // 更新统计
-    const dbCount = ok.filter(r => r.db_type !== 'file').length;
-    const fileCount = ok.filter(r => r.db_type === 'file').length;
+    // 更新统计（三类互不相交：数据库 / 文件 / 对象存储）
+    const isFile = r => r.db_type === 'file';
+    const isObj = r => r.db_type === 'object_storage';
+    const dbCount = ok.filter(r => !isFile(r) && !isObj(r)).length;
+    const fileCount = ok.filter(isFile).length;
+    const objCount = ok.filter(isObj).length;
     if ($("r_db_count")) $("r_db_count").textContent = dbCount;
     if ($("r_file_count")) $("r_file_count").textContent = fileCount;
+    if ($("r_obj_count")) $("r_obj_count").textContent = objCount;
 
     // 填充纳管主机下拉
     const hostOpts = '<option value="">— 选择已纳管 SSH 主机 —</option>' +
@@ -2094,6 +2098,16 @@
         body.target_host_user = th.user;
         body.target_host_password = th.password;
       }
+    } else if (recType === 'obj') {
+      // ---- 对象存储恢复：目标是"桶 + 前缀"，与主机/目录无关 ----
+      const bucket = ($("r_obj_bucket")?.value || "").trim();
+      if (bucket) body.target_bucket = bucket;   // 留空=回写源桶
+      const prefix = ($("r_obj_prefix")?.value || "").trim();
+      if (prefix) body.target_prefix = prefix;
+      body.overwrite = $("r_obj_overwrite")?.value || "if_newer";
+      body.apply_deleted = !!($("r_obj_apply_deleted")?.checked);
+      const keys = ($("r_obj_keys")?.value || "").trim();
+      if (keys) body.restore_keys = keys;        // 颗粒级：只回放这些 key
     } else {
       // ---- 数据库恢复：分"恢复到源任务"和"跨主机恢复" ----
       const mode = document.querySelector('input[name="r_mode"]:checked')?.value || 'same';
@@ -2177,8 +2191,10 @@
     const search = ($("r_search")?.value || "").toLowerCase().trim();
     // 按类型过滤
     let filtered = records.filter(r => {
-      if (recType === 'db' && r.db_type === 'file') return false;
-      if (recType === 'file' && r.db_type !== 'file') return false;
+      const t = r.db_type;
+      if (recType === 'db') return t !== 'file' && t !== 'object_storage';
+      if (recType === 'file') return t === 'file';
+      if (recType === 'obj') return t === 'object_storage';
       return true;
     });
     // 按关键字过滤（业务系统 / IP，使用后端归一化后的 host_ip，避免「本地」被吞）
@@ -2197,20 +2213,23 @@
 
   window.filterRestoreRecords = renderRestoreRecords;
 
-  // 切换备份类型（数据库 ↔ 文件）
+  // 切换备份类型（数据库 ↔ 文件 ↔ 对象存储）
   window.onRestoreTypeChange = () => {
     const recType = document.querySelector('input[name="r_type"]:checked')?.value || 'db';
+    const show = (id, on) => { if ($(id)) $(id).style.display = on ? "" : "none"; };
+    // 先全部收起，再按类型展开——三类目标参数互不通用（主机目录 / 桶前缀）
+    show("r_mode_db_row", false);
+    show("r_db_same_row", false);
+    show("r_db_remote_row", false);
+    show("r_file_row", false);
+    show("r_obj_row", false);
     if (recType === 'db') {
-      // 数据库：显示模式选择 + 数据库相关字段，隐藏文件字段
-      if ($("r_mode_db_row")) $("r_mode_db_row").style.display = "";
-      if ($("r_file_row")) $("r_file_row").style.display = "none";
+      show("r_mode_db_row", true);
       onRestoreModeChange(); // 刷新 isSame/isRemote
-    } else {
-      // 文件：隐藏模式选择，只显示目标目录 + 目标主机
-      if ($("r_mode_db_row")) $("r_mode_db_row").style.display = "none";
-      if ($("r_db_same_row")) $("r_db_same_row").style.display = "none";
-      if ($("r_db_remote_row")) $("r_db_remote_row").style.display = "none";
-      if ($("r_file_row")) $("r_file_row").style.display = "";
+    } else if (recType === 'file') {
+      show("r_file_row", true);
+    } else if (recType === 'obj') {
+      show("r_obj_row", true);
     }
     renderRestoreRecords();
     onRecordChange();
@@ -3217,8 +3236,15 @@
 
   async function openSyncModal(task) {
     $("syncForm").reset();
-    fillDbTypeSelect($("s_src_db_type"), ["file"]);
-    fillDbTypeSelect($("s_tgt_db_type"), ["file"]);
+    // 同步任务的类型必须是同步插件注册表里的库型（sync_types）：原先用
+    // db_types（备份引擎全集）会列出 redis/mongodb/neo4j/opengauss 等
+    // 无法同步的类型，选了之后任务必然失败。
+    if (window.BKP && BKP.ensureMeta) {
+      try { await BKP.ensureMeta(); } catch (e) { /* 内部已兜底 */ }
+    }
+    const syncTypeOpts = { typesKey: "sync_types" };
+    fillDbTypeSelect($("s_src_db_type"), [], syncTypeOpts);
+    fillDbTypeSelect($("s_tgt_db_type"), [], syncTypeOpts);
     const dbTasks = await api("GET", "/api/tasks?db_type_exclude=file");
     $("s_source_task_id").innerHTML = dbTasks.map((t) =>
       `<option value="${t.id}">${esc(t.name)} (${esc(t.db_display_name || t.db_type)})</option>`).join("") ||
@@ -6096,6 +6122,52 @@
     const dmDetailEl = document.getElementById("dbMigrateDetailModal");
     const dmDetailInst = dmDetailEl ? new bootstrap.Modal(dmDetailEl) : null;
 
+    // 迁移计划的类型下拉：按平台真实支持的类型全量填充（源/目标各一个）。
+    // 历史实现是模板里硬编码 mysql/postgresql 两个 option，用户看不到
+    // MariaDB、金仓、达梦、Oracle、SQL Server 等同样支持迁移的类型。
+    const DM_TGT_AUTO_CREATE = ["mysql", "mariadb"];   // 只有这两种支持自动建库
+    async function dmFillTypeSelects() {
+      if (window.BKP && BKP.ensureMeta) {
+        try { await BKP.ensureMeta(); } catch (e) { /* 内部已兜底 */ }
+      }
+      [["dm_src_db_type", "dm_src_port"], ["dm_tgt_db_type", "dm_tgt_port"]]
+        .forEach(function (pair) {
+          const sel = $(pair[0]);
+          if (!sel) return;
+          const needFill = !sel.options || !sel.options.length;
+          const afterFill = function (el, types) {
+            // 默认 MySQL/MariaDB（与模板默认端口 3306 一致）
+            if (!el.value && types.indexOf("mysql") >= 0) el.value = "mysql";
+            if (pair[0] === "dm_tgt_db_type") dmUpdateTgtDbHint();
+          };
+          if (needFill) {
+            // 迁移复用同步引擎执行，因此类型清单取 sync_types
+            // （= 同步插件注册表；不列 file 等非数据库类型）
+            fillDbTypeSelect(sel, [], { typesKey: "sync_types", onReady: afterFill });
+          } else {
+            afterFill(sel, [sel.value]);
+          }
+          if (!sel.dataset.dmPortBound) {
+            sel.dataset.dmPortBound = "1";
+            sel.addEventListener("change", function () {
+              const p = (META.default_ports || {})[sel.value];
+              if (p) $(pair[1]).value = p;
+              if (pair[0] === "dm_tgt_db_type") dmUpdateTgtDbHint();
+            });
+          }
+        });
+    }
+
+    // 目标库能否自动创建，直接写在标签上，避免用户误以为所有类型都会建库
+    function dmUpdateTgtDbHint() {
+      const el = document.getElementById("dm_tgt_db_name_label");
+      if (!el) return;
+      const t = $("dm_tgt_db_type").value;
+      el.textContent = DM_TGT_AUTO_CREATE.indexOf(t) >= 0
+        ? "数据库 *（不存在将自动创建）"
+        : "数据库 *（需已存在）";
+    }
+
     function statusBadgeDbMigrate(s) {
       const m = {
         created: ["bg-secondary", "已创建"],
@@ -6236,6 +6308,8 @@
       $("dm_tgt_db_name").value = "";
       $("dm_note").value = "";
       ["dm_t_structure", "dm_t_full", "dm_t_verify"].forEach(function (id) { $("#" + id).checked = true; });
+      // 保险：类型下拉若仍是空的（首次进入/接口异常后重进）立刻补齐
+      dmFillTypeSelects();
       if (dmModalInst) dmModalInst.show();
     };
 
@@ -6274,6 +6348,7 @@
     $("newDbMigrateBtn").addEventListener("click", window.openDbMigrateModal);
     $("dbMigrateSaveBtn").addEventListener("click", window.saveDbMigrate);
 
+    await dmFillTypeSelects();
     await loadDbMigrations();
   }
 
@@ -7370,12 +7445,26 @@
 
   /**
    * 构造一条消息气泡的 HTML。
+   *
+   * 优先交给 AgentRender（Markdown / 表格 / 状态徽章 / 工具步骤卡），
+   * 该渲染层未加载时降级为纯文本转义输出（保证任何情况下消息都能显示）。
+   *
    * @param {string} role user | assistant
-   * @param {string} content 文本内容
+   * @param {string} content 文本内容（助手内容为 Markdown）
    * @param {string} kind normal | error | confirm | system
-   * @param {Array} toolTrace 工具调用轨迹
+   * @param {Array} toolTrace 工具调用轨迹 [{name, args, result, duration_ms}]
+   * @param {string} time 展示用时间字符串
    */
-  function agentBubbleHtml(role, content, kind = "normal", toolTrace = []) {
+  function agentBubbleHtml(role, content, kind = "normal", toolTrace = [], time = "") {
+    const R = window.AgentRender;
+    if (R && typeof R.bubble === "function") {
+      try {
+        return R.bubble({ role, content, kind, trace: toolTrace, time: time });
+      } catch (e) {
+        // 渲染层异常时降级，避免整条消息丢失
+        console.error("[agent] 富文本渲染失败，降级为纯文本", e);
+      }
+    }
     const isUser = role === "user";
     const bbClass = isUser ? "bb-user"
       : kind === "error" ? "bb-error"
@@ -7407,7 +7496,8 @@
     if (!box) return;
     const empty = box.querySelector(".agent-empty");
     if (empty) box.innerHTML = "";
-    box.insertAdjacentHTML("beforeend", agentBubbleHtml(role, content, kind, toolTrace));
+    box.insertAdjacentHTML("beforeend",
+      agentBubbleHtml(role, content, kind, toolTrace, agentTime(new Date().toISOString())));
     agentScrollBottom();
   }
 
@@ -7467,9 +7557,17 @@
     const d = await agentApi("/api/agent/sessions/" + encodeURIComponent(sessionId) + "/messages");
     const msgs = (d && d.ok && Array.isArray(d.messages)) ? d.messages : [];
     const html = [];
+    // 历史消息里工具结果是独立的 role=tool 消息：按出现顺序回填到上一条
+    // assistant 的 tool_calls 上，前端才能把「调用 + 结果 + 耗时」渲染成一张步骤卡
+    let pending = null;   // {calls: [...], idx: number}
     msgs.forEach((m) => {
       const role = m.role || "assistant";
       if (role === "tool") {
+        if (pending && pending.idx < pending.calls.length) {
+          pending.calls[pending.idx].result = m.tool_result;
+          pending.idx += 1;
+          return;
+        }
         html.push('<div class="agent-tool-row"><span class="agent-tool-chip">' +
           '<i class="bi bi-tools"></i>' + esc(m.tool_name || "tool") + ' 已执行</span></div>');
         return;
@@ -7477,8 +7575,9 @@
       if (role !== "user" && role !== "assistant") return;
       const trace = Array.isArray(m.tool_calls)
         ? m.tool_calls.map((tc) => ({ name: tc.name, args: tc.args })) : [];
+      pending = trace.length ? { calls: trace, idx: 0 } : null;
       if (!String(m.content || "").trim() && !trace.length) return;
-      html.push(agentBubbleHtml(role, m.content || "", "normal", trace));
+      html.push(agentBubbleHtml(role, m.content || "", "normal", trace, agentTime(m.created_at)));
     });
     box.innerHTML = html.length ? html.join("")
       : '<div class="agent-empty"><i class="bi bi-chat-dots"></i>' +
@@ -7701,6 +7800,29 @@
     const msgBox = document.getElementById("agentMessages");
     if (msgBox) {
       msgBox.addEventListener("click", (ev) => {
+        // 复制回答
+        const copyBtn = ev.target.closest ? ev.target.closest(".ag-copy") : null;
+        if (copyBtn) {
+          const bubble = copyBtn.closest(".agent-bubble");
+          const content = bubble ? bubble.querySelector(".ag-content") : null;
+          const text = content ? content.innerText.trim() : "";
+          const done = () => toast("已复制到剪贴板");
+          const fail = () => toast("复制失败，请手动选中复制", "danger");
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(fail);
+          } else {
+            try {
+              const ta = document.createElement("textarea");
+              ta.value = text;
+              document.body.appendChild(ta);
+              ta.select();
+              document.execCommand("copy");
+              ta.remove();
+              done();
+            } catch (e) { fail(); }
+          }
+          return;
+        }
         const tip = ev.target.closest ? ev.target.closest(".agent-tip") : null;
         if (!tip) return;
         const el = document.getElementById("agentInput");

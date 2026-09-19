@@ -145,10 +145,9 @@ def log_file_content():
 def log_operations():
     """列出操作日志文件，可按 kind / 任务 / 记录 / 日期过滤。"""
     from core import oplog
-    try:
-        limit = min(int(request.args.get("limit") or 200), 1000)
-    except ValueError:
-        limit = 200
+    default_size = 100 if request.path.startswith(contract.V1_PREFIX) else 200
+    _page, size, offset = contract.pagination_args(default_size=default_size,
+                                                   max_size=1000)
 
     def _int_or_none(name):
         raw = (request.args.get(name) or "").strip()
@@ -158,7 +157,7 @@ def log_operations():
             return None
 
     rows = oplog.list_operations(
-        limit=limit,
+        limit=size + offset,
         kind=(request.args.get("kind") or "").strip(),
         task_id=_int_or_none("task_id"),
         record_id=_int_or_none("record_id"),
@@ -167,8 +166,13 @@ def log_operations():
     )
     for r in rows:
         r["size_human"] = db.human_size(r["size_bytes"])
-    return jsonify({"ok": True, "operations": rows, "count": len(rows),
-                    "dir": str(oplog.operations_root())})
+    page_rows = rows[offset:offset + size]
+    return contract.list_response(
+        page_rows, total=len(rows),
+        legacy={"ok": True, "operations": rows, "count": len(rows),
+                "dir": str(oplog.operations_root())},
+        **({"dir": str(oplog.operations_root())} if contract.envelope_wanted()
+           else {}))
 
 
 @api_bp.route("/logs/operations/content", methods=["GET"])

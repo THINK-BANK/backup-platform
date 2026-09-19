@@ -2,7 +2,7 @@
 """恢复校验策略与恢复测试报告 API。"""
 from flask import request, jsonify
 
-from . import api_bp
+from . import api_bp, contract
 from core import models
 from core.restore_verify import run_restore_verify_policy
 from auth import login_required
@@ -79,9 +79,13 @@ def list_policy_reports(policy_id: int):
 def list_reports():
     """列出恢复测试报告，可选 task_id 过滤。"""
     task_id = request.args.get("task_id", type=int)
-    limit = request.args.get("limit", 200, type=int)
-    reports = models.list_restore_test_reports(task_id=task_id, limit=limit)
-    return jsonify({"success": True, "data": reports})
+    default_size = 100 if request.path.startswith(contract.V1_PREFIX) else 200
+    _page, size, offset = contract.pagination_args(default_size=default_size,
+                                                   max_size=500)
+    reports = models.list_restore_test_reports(task_id=task_id, limit=size + offset)
+    page_rows = reports[offset:offset + size]
+    return contract.list_response(page_rows, total=len(reports),
+                                  legacy={"success": True, "data": reports})
 
 
 @api_bp.route("/restore-test-reports/<int:report_id>/clean", methods=["POST"])

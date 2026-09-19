@@ -17,9 +17,11 @@ from flask import (Flask, render_template, request, redirect,
 
 import config
 import core.db as db
+from core import error_codes
 from auth import login_required
 # 注意：api/__init__.py 已注册 api_bp 的全局鉴权/CSRF 钩子（必须在嵌套蓝图注册前声明）
 from api import api_bp
+from api import contract as api_contract
 
 # ------------------------- 登录安全状态（内存限流） -------------------------
 # ip -> [连续失败次数, 首次失败时间戳]
@@ -83,6 +85,21 @@ def create_app() -> Flask:
             print(f"[startup] db_adapters: 已注册 {n} 个自定义适配器")
     except Exception as e:
         print(f"[startup] db_adapters 初始化失败（不影响内置引擎）: {e}")
+    # 首屏注入 META：把「数据库类型 / 显示名 / 默认端口」直接渲染进页面。
+    # 修复的真实缺陷：META 原先只由 app.js 在 DOMContentLoaded 里 await
+    # /api/meta 后填充，比它先执行的页面脚本（static/js/sync.js 用
+    # BKP.fillDbTypeSelect）拿到空数组，导致「数据同步」的类型下拉常年为空、
+    # 「数据迁移」只能硬编码两个类型。渲染期注入后首屏即可用，且与接口同源
+    # （都走 api.system.build_meta，不会两处漂移）。
+    @app.context_processor
+    def _inject_bkp_meta():
+        try:
+            from api.system import build_meta
+            return {"bkp_meta": build_meta()}
+        except Exception as e:  # noqa: BLE001 - 注入失败不能影响页面渲染
+            print(f"[startup] bkp_meta 注入失败（前端将回退到 /api/meta）: {e}")
+            return {"bkp_meta": {}}
+
     app.config["BACKUP_ROOT"] = str(config.get_backup_root())
     _root_info = config.backup_root_info()
     _store_log = db.get_logger("app")
@@ -106,17 +123,25 @@ def create_app() -> Flask:
         )
         return resp
 
+    # API 双前缀注册（差异 G5）：
+    #   /api/v1  规范路径（契约冻结，见 docs/api_conventions.md）
+    #   /api     兼容路径（响应带 Deprecation/Link 头，行为完全一致）
+    # 同一个蓝图注册两次，视图函数只有一份实现，不存在两套逻辑漂移。
     app.register_blueprint(api_bp)
+    app.register_blueprint(api_bp, url_prefix=api_contract.V1_PREFIX, name="api_v1")
 
     # ------------------------- 全局 API 异常处理 -------------------------
     # 统一把未捕获异常转为 JSON（/api 路径），避免裸 HTML 500；
     # 唯一约束冲突 → 409，其余 → 500 + 可读信息（含日志），页面路由不受影响。
+    # 响应体统一为三段式（code/message/details，保留历史 error 字段）。
     @app.errorhandler(Exception)
     def _global_error_handler(e):
         from werkzeug.exceptions import HTTPException
         if isinstance(e, HTTPException):
             if request.path.startswith("/api/"):
-                return jsonify({"error": e.description or e.name}), e.code
+                code = error_codes.code_for_status(e.code or 500)
+                return jsonify(error_codes.make_payload(
+                    code, e.description or e.name)), e.code
             return e
         try:
             app.logger.exception("未处理异常 [%s %s]: %s",
@@ -126,10 +151,10 @@ def create_app() -> Flask:
         msg = str(e) or e.__class__.__name__
         if e.__class__.__name__ == "IntegrityError" or "UNIQUE constraint" in msg \
                 or "Duplicate entry" in msg:
-            return jsonify({"error": f"数据冲突（记录已存在或唯一字段重复）：{msg[:200]}"}), 409
-        if request.path.startswith("/api/"):
-            return jsonify({"error": f"服务器内部错误: {msg[:300]}"}), 500
-        return jsonify({"error": f"服务器内部错误: {msg[:300]}"}), 500
+            return jsonify(error_codes.make_payload(
+                "AIDBM-1006", f"数据冲突（记录已存在或唯一字段重复）：{msg[:200]}")), 409
+        return jsonify(error_codes.make_payload(
+            "AIDBM-5001", f"服务器内部错误: {msg[:300]}")), 500
 
     # ------------------------- 鉴权 -------------------------
     @app.route("/login", methods=["GET", "POST"])
@@ -221,6 +246,17 @@ def create_app() -> Flask:
     def restore_page():
         return render_template("restore.html", page="restore")
 
+    @app.route("/object_storage")
+    @login_required
+    def object_storage_page():
+        """对象存储备份（一级菜单）。
+
+        与「数据库备份 / 文件备份」并列：对象存储此前只有后端引擎与接口，
+        备份入口藏在通用任务表单的类型下拉里，用户找不到、也看不到桶级能力
+        （桶浏览、预扫描、对象清单）。本页把这条链路单独呈现。
+        """
+        return render_template("object_storage.html", page="object_storage")
+
     @app.route("/settings")
     @login_required
     def settings_page():
@@ -295,6 +331,12 @@ def create_app() -> Flask:
     @login_required
     def agent_page():
         return render_template("agent.html", page="agent")
+
+    @app.route("/agentless")
+    @login_required
+    def agentless_page():
+        """无 Agent 接入面板：任务本次通道/侵入等级 + 目标端免装取证。"""
+        return render_template("agentless.html", page="agentless")
 
     @app.route("/alert")
     @login_required

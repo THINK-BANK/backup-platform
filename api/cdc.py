@@ -10,7 +10,7 @@ from auth import login_required
 from core.cdc import rowlevel as rl
 from flask import jsonify, request
 
-from . import api_bp
+from . import api_bp, contract
 
 
 def _row_public(row: dict) -> dict:
@@ -124,15 +124,17 @@ def api_cdc_status(sid):
 @api_bp.route("/cdc/streams/<int:sid>/events", methods=["GET"])
 @login_required
 def api_cdc_events(sid):
-    limit = min(int(request.args.get("limit") or 100), 500)
+    """读取行级变更事件（分页见 docs/api_conventions.md §2）。"""
+    _page, size, offset = contract.pagination_args(default_size=100, max_size=500)
     events = rl.STORE.list_events(
-        sid, limit=limit, op=request.args.get("op") or "",
+        sid, limit=size, op=request.args.get("op") or "",
         table=request.args.get("table") or "",
         since=request.args.get("since") or "",
         until=request.args.get("until") or "",
-        offset=int(request.args.get("offset") or 0))
+        offset=offset)
     total = rl.STORE.count(sid)
-    return jsonify({"total": total, "events": events})
+    return contract.list_response(events, total=total,
+                                  legacy={"total": total, "events": events})
 
 
 @api_bp.route("/cdc/streams/<int:sid>/replay", methods=["POST"])

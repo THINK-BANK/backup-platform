@@ -26,8 +26,10 @@
         <div class="nav-group-label">备份管理</div>
         <a class="nav-link {% if page=='tasks' %}active{% endif %}" href="/tasks" title="数据库备份" data-perm="backup.task.view"><i class="bi bi-list-check"></i> <span class="nav-label">数据库备份</span></a>
         <a class="nav-link {% if page=='file_backup' %}active{% endif %}" href="/file_backup" title="文件备份" data-perm="backup.task.view"><i class="bi bi-folder2-open"></i> <span class="nav-label">文件备份</span></a>
+        <a class="nav-link {% if page=='object_storage' %}active{% endif %}" href="/object_storage" title="对象存储备份（MinIO / 阿里云 OSS / 腾讯云 COS / S3 兼容，桶级保护，桶侧零安装）" data-perm="backup.task.view"><i class="bi bi-cloud-arrow-up"></i> <span class="nav-label">对象存储备份</span></a>
         <a class="nav-link {% if page=='storage' %}active{% endif %}" href="/storage" title="存储管理" data-perm="backup.storage.manage"><i class="bi bi-hdd-rack"></i> <span class="nav-label">存储管理</span></a>
         <a class="nav-link {% if page=='protection' %}active{% endif %}" href="/protection" title="备份策略" data-perm="backup.policy.manage"><i class="bi bi-shield-lock"></i> <span class="nav-label">备份策略</span></a>
+        <a class="nav-link {% if page=='agentless' %}active{% endif %}" href="/agentless" title="无 Agent 接入：任务本次通道与侵入等级、目标端免装取证"><i class="bi bi-shield-check"></i> <span class="nav-label">无 Agent</span></a>
         <a class="nav-link {% if page=='plugins' %}active{% endif %}" href="/plugins" title="备份依赖插件（一键安装 xtrabackup / percona / mariabackup 等）" data-perm="backup.plugins.manage"><i class="bi bi-plug"></i> <span class="nav-label">备份插件</span></a>
         <a class="nav-link {% if page in ('rt_timeline', 'realtime', 'cdc') %}active{% endif %}" href="/realtime" title="实时备份：CDC 行级变更捕获 + CDP 恢复点时间轴（任意时间点恢复）" data-perm="rt.manage"><i class="bi bi-broadcast-pin"></i> <span class="nav-label">实时备份</span></a>
         <div class="nav-group-label">数据恢复管理</div>
@@ -84,8 +86,11 @@
   </div>
 
   <script src="/static/js/bootstrap.bundle.min.js?v=2026080210"></script>
-  <script src="/static/js/bkp-core.js?v=2026091601"></script>
-  <script src="/static/js/app.js?v=2026091601"></script>
+  <!-- 首屏注入 META（数据库类型/显示名/默认端口）：必须在 bkp-core.js 之前，
+       否则依赖 BKP.META 的下拉会被填成空（见 app.py context_processor 注释） -->
+  <script>window.__BKP_META__ = {{ bkp_meta | default({}) | tojson }};</script>
+  <script src="/static/js/bkp-core.js?v=2026091901"></script>
+  <script src="/static/js/app.js?v=2026091901"></script>
   <script>
     // 按权限隐藏菜单（每个 <a class="nav-link" data-perm="..."> 命中则可见）
     document.addEventListener("DOMContentLoaded", function () {

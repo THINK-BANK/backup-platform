@@ -65,7 +65,7 @@ _BOOL_FIELDS = ("enabled", "supports_incremental", "supports_full_instance",
 # 内置 db_type（与 core.engines 注册表一致），不可被自定义适配器占用
 BUILTIN_TYPES = (
     "mysql", "mariadb", "postgresql", "oracle", "kingbase", "dameng",
-    "sqlserver", "redis", "mongodb", "neo4j", "file", "vm",
+    "sqlserver", "redis", "mongodb", "neo4j", "file", "vm", "object_storage",
 )
 
 

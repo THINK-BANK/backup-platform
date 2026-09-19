@@ -242,6 +242,14 @@ class PluginRegistry:
     def get(self, db_type: str) -> Optional[type]:
         return self._plugins.get(db_type.lower())
 
+    def available(self) -> list:
+        """已注册（=可迁移/可同步）的数据库类型清单，稳定排序。
+
+        给前端下拉与接口校验共用：新增插件只需注册，界面上自动出现，
+        不会像过去那样在模板里硬编码两三个类型。
+        """
+        return sorted(self._plugins.keys())
+
     def get_plugin(self, db_type: str) -> Optional["BasePlugin"]:
         """返回插件实例（用于调用 disable_constraints 等实例方法）。"""
         cls = self.get(db_type)

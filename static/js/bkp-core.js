@@ -54,7 +54,32 @@ window.BKP = (function () {
   };
 
   // ---- 全局状态 ----
+  // 服务端渲染时已把 META 内联进页面（base.html 的 window.__BKP_META__），
+  // 见 app.py 的 context_processor：这样首屏脚本（如 sync.js）立刻就能拿到
+  // 数据库类型清单，不再依赖「/api/meta 先返回」这个时序假设。
   BKP.META = { db_types: [], display_names: {}, default_ports: {}, demo_mode: "auto", scheduler_enabled: true };
+  if (typeof window !== "undefined" && window.__BKP_META__) {
+    try { BKP.META = Object.assign(BKP.META, window.__BKP_META__); } catch (e) { /* ignore */ }
+  }
+
+  // ---- 元信息就绪保证 ----
+  // 所有依赖 META 的渲染都应先 await 它：首屏已注入时立即返回；缺失时按需拉
+  // /api/meta（并发去重），失败也不抛错（避免把页面交互整体打断）。
+  BKP.ensureMeta = function () {
+    if (BKP.META.db_types && BKP.META.db_types.length) {
+      return Promise.resolve(BKP.META);
+    }
+    if (!BKP._metaPromise) {
+      BKP._metaPromise = fetch("/api/meta", { credentials: "same-origin" })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (m) {
+          if (m) BKP.META = Object.assign(BKP.META, m);
+          return BKP.META;
+        })
+        .catch(function () { return BKP.META; });
+    }
+    return BKP._metaPromise;
+  };
 
   // ---- API 调用封装 ----
   BKP.api = async function (method, url, body) {
@@ -159,11 +184,37 @@ window.BKP = (function () {
   };
 
   // ---- 填充数据库类型下拉 ----
-  BKP.fillDbTypeSelect = function (sel, exclude) {
+  // META 还没到时会自己补拉一次再填（历史缺陷：调用点执行得比 META 就绪早，
+  // 下拉被填成空，用户「选不了数据库类型」）。options.onReady(sel, types)
+  // 便于调用方在类型真正就绪后再设置默认值/联动端口。
+  BKP.fillDbTypeSelect = function (sel, exclude, options) {
+    if (!sel) return;
     exclude = exclude || [];
-    sel.innerHTML = BKP.META.db_types
-      .filter(function (t) { return !exclude.includes(t); })
-      .map(function (t) { return '<option value="' + t + '">' + BKP.esc(BKP.META.display_names[t] || t) + '</option>'; }).join("");
+    options = options || {};
+    var fill = function () {
+      var dn = BKP.META.display_names || {};
+      // typesKey 用于取不同场景的类型清单：备份任务用 db_types（含 file），
+      // 数据同步/数据迁移用 sync_types（= 同步插件注册表，避免出现选不动的类型）
+      var pool = BKP.META[options.typesKey || "db_types"] || [];
+      if (!pool.length && options.typesKey) pool = BKP.META.db_types || [];
+      var types = pool.filter(function (t) {
+        return exclude.indexOf(t) < 0;
+      });
+      if (!types.length) return [];
+      sel.innerHTML = types.map(function (t) {
+        return '<option value="' + t + '">' + BKP.esc(dn[t] || t) + '</option>';
+      }).join("");
+      return types;
+    };
+    var types = fill();
+    if (types.length) {
+      if (typeof options.onReady === "function") options.onReady(sel, types);
+      return;
+    }
+    BKP.ensureMeta().then(function () {
+      var ts = fill();
+      if (ts.length && typeof options.onReady === "function") options.onReady(sel, ts);
+    });
   };
 
   return BKP;

@@ -7,7 +7,7 @@ from flask import request, jsonify, make_response
 from auth import login_required
 from core import models, scheduler, db
 from core.engines import supported_types, get_engine
-from . import api_bp
+from . import api_bp, contract
 
 # 各类型拉库时过滤的系统库/模板库
 _LIST_DB_SKIP = {
@@ -133,6 +133,7 @@ def list_task_databases(task_id):
 
 
 @api_bp.route("/custom-script/template", methods=["GET"])
+@api_bp.route("/custom-scripts/template", methods=["GET"])
 @login_required
 def custom_script_template():
     """按数据库类型 + 备份范围返回自定义备份/恢复脚本模板。
@@ -198,11 +199,17 @@ def list_task_tables(task_id):
 @api_bp.route("/tasks", methods=["GET"])
 @login_required
 def list_tasks():
+    """列出备份任务（分页见 docs/api_conventions.md §2）。"""
     db_type = request.args.get("db_type")
     db_type_exclude = request.args.get("db_type_exclude")
     tasks = models.list_tasks(include_secret=False, db_type=db_type,
                               db_type_exclude=db_type_exclude)
-    return jsonify(tasks)
+    # 统一分页：v1 默认 100/页；兼容路径默认返回全量（历史行为不变）
+    default_size = 100 if request.path.startswith(contract.V1_PREFIX) else len(tasks) or 1
+    _page, size, offset = contract.pagination_args(default_size=default_size,
+                                                   max_size=1000)
+    return contract.list_response(tasks[offset:offset + size], total=len(tasks),
+                                  legacy=tasks)
 
 
 @api_bp.route("/tasks", methods=["POST"])

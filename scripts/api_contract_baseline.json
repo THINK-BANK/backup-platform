@@ -1,0 +1,45 @@
+{
+  "note": "存量命名/契约债务基线：门禁只拦截新增违规，逐步收敛后请重新固化（--update-baseline）",
+  "findings": [
+    {
+      "path": "/api/db-migrate",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'db-migrate' 应为复数（单例资源请登记白名单）"
+    },
+    {
+      "path": "/api/db-migrate/<int:plan_id>",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'db-migrate' 应为复数（单例资源请登记白名单）"
+    },
+    {
+      "path": "/api/migration",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'migration' 应为复数（单例资源请登记白名单）"
+    },
+    {
+      "path": "/api/migration/<int:plan_id>",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'migration' 应为复数（单例资源请登记白名单）"
+    },
+    {
+      "path": "/api/v1/db-migrate",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'db-migrate' 应为复数（单例资源请登记白名单）"
+    },
+    {
+      "path": "/api/v1/db-migrate/<int:plan_id>",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'db-migrate' 应为复数（单例资源请登记白名单）"
+    },
+    {
+      "path": "/api/v1/migration",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'migration' 应为复数（单例资源请登记白名单）"
+    },
+    {
+      "path": "/api/v1/migration/<int:plan_id>",
+      "rule": "R2-集合复数",
+      "detail": "集合端点末段 'migration' 应为复数（单例资源请登记白名单）"
+    }
+  ]
+}

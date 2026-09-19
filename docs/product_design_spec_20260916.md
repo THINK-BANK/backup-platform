@@ -337,15 +337,15 @@ APScheduler job(task_<id>) → _job_wrapper → run_task_now
 | 覆盖 | 备份/恢复/记录/任务/存储/主机/同步/迁移/对比/实时/演练/巡检/克隆/告警/用户/插件/数据库类型/虚拟机/磁带/日志 等 |
 | 错误语义 | 参数问题 400、唯一性冲突 409、未认证 401、`/api` 异常统一转 JSON（全局 errorhandler） |
 
-### 7.2 接口规范（产品化要求，当前**未完全统一**）
+### 7.2 接口规范（2026-09-19 已统一，契约全文见 `docs/api_conventions.md`）
 
 | 规范项 | 要求 | 当前状态 |
 |---|---|---|
-| 命名 | `/api/<资源>[/<id>[/<动作>]]`，小写复数 | ⚠️ 历史遗留混用（如 `/tasks`、`/sync-tasks`、`/db-migrate`） |
-| 分页 | 统一 `page/size` 或 `limit/offset` | ⚠️ 部分接口支持 `limit`，无全局分页规范 |
-| 错误码 | 业务错误码 + message + details 三段式 | ⚠️ HTTP 状态码一致，**业务错误码体系未建立**（G4） |
-| 版本 | URL 前缀 `/api/v1/` | ❌ 未引入（G5） |
-| 文档 | OpenAPI/Swagger 自动生成 | ❌ 无（G6） |
+| 命名 | `/api/v1/<复数资源>[/<id>[/<动作>]]`，小写 kebab-case | ✅ `/api/v1` 与 `/api` 各 **249** 条路由；规则 R1–R3 已进门禁；存量 8 条历史名单数走**规范别名**收敛（`/migration-plans`、`/migration-protection-plans`），基线见 `docs/api_naming_baseline.md` |
+| 分页 | `page/size`（推荐）+ `limit/offset`（兼容自动换算），上限 500 | ✅ 统一信封 `{items,total,page,size,has_more}`；`/api/v1` 恒返回，旧 `/api` 保持历史形状（`?envelope=1` 可切） |
+| 错误码 | `code/message/details` 三段式 + HTTP 状态 | ✅ `core/error_codes.py` 六域 24 码；**任何** `/api` 错误响应必带 `code`（兜底映射），保留历史 `error` 字段零破坏（G4 已闭环） |
+| 版本 | URL 前缀 `/api/v1/` | ✅ 双注册 + 弃用头（`Deprecation` / `Link: rel="successor-version"` / `Warning 299`）+ `X-API-Version`（G5 已闭环） |
+| 文档 | OpenAPI 自动生成 | ✅ `GET /api/v1/openapi.json`（OpenAPI 3.0.3）+ 离线文档页 `GET /api/docs`（零 CDN），含 `x-success-envelope`、`x-error-codes` 扩展（G6 已闭环） |
 
 ---
 
@@ -443,20 +443,27 @@ APScheduler job(task_<id>) → _job_wrapper → run_task_now
 | 类型 | 内容 |
 |---|---|
 | 单元测试 | `tests/` 共 32 个测试文件，覆盖 RT 日志、存储、加密、重删、CDC、Neo4j 注册、虚拟机编排、AI 告警等 |
-| 基线 | pytest 基线 **124 passed / 18 failed**（18 项为 `test_backup_restore_all.py` 的既有环境基线失败，非新增回归） |
-| 专项 | `test_rt_journal` 48 全过；`test_link_sources_contract` 契约测试 |
+| 基线 | pytest 全量 **526 用例：325 passed / 170 failed / 1 skipped / 30 errors**（绝大多数是缺真实数据库与 SSH 目标的**存量环境失败**，非本次回归；已固化为 `scripts/test_baseline.json`，快速门禁集为其中 145 条确定性用例） |
+| 专项 | `test_rt_journal` 48 全过；`test_link_sources_contract` 契约测试；`test_api_contract` 16 条接口契约断言（错误码/分页/版本/OpenAPI/命名） |
 | 压力 | `scripts/stress_test_full.py` 六阶段压测（可落盘 JSON 报告） |
-| 契约 | 面板脚本依赖元素 id 校验；链路真实检查（非模拟） |
+| 契约 | 面板脚本依赖元素 id 校验；链路真实检查（非模拟）；前端契约断言走真实 HTTP（含未登录 401 + `AIDBM-1002`） |
 
-### 11.2 质量门禁（建议，当前**未完全建立**）
+> 回归判定方法（重要）：由于存在上述存量环境失败，"pytest 是否全绿"不是有效指标。
+> 正确做法是 `git archive HEAD | tar -x -C /tmp/bp_base` 导出干净快照跑同命令比对，
+> 或用 `scripts/gate_baseline.py` 与基线比对（失败数不增、通过数不减即零回归）。
+
+### 11.2 质量门禁（2026-09-19 已建立）
+
+入口：`scripts/test_gate.sh`（`--full` / `--ui` / `--all` / `--update-baseline`）
 
 | 门禁 | 状态 |
 |---|---|
-| 提交前跑单元测试 | ⚠️ 依赖人工 |
-| 发布前跑压测 | ⚠️ 按需 |
-| 覆盖率门槛 | ❌ 无 |
-| CI 自动构建与测试 | ⚠️ GitHub Actions 仅构建镜像，**未跑测试**（G7） |
-| 前端自动化测试 | ❌ 仅有 playwright 脚本，未纳入流水线（G8） |
+| 提交前跑测试 | ✅ `scripts/hooks/pre-commit`（`bash scripts/install_git_hooks.sh` 安装）：契约检查 + 快速确定性用例（128 条）+ 覆盖率门槛；`SKIP_GATE=1` 可临时跳过但 CI 仍拦 |
+| 覆盖率门槛 | ✅ `--cov-fail-under=17`（core+api，约 3.9 万行），报告 `artifacts/coverage.xml`；**该门槛是当前存量基线，只用于阻止下降**，每次版本须上调（目标每版 +5pt） |
+| CI 自动跑测试 | ✅ `.github/workflows/ci.yml`：`contract`（契约+快速集+覆盖率）→ `regression`（全量与基线比对，禁新增失败）→ `frontend`（真实 chromium），结论汇总到 `gate-summary`；镜像流水线依赖该结论（G7 已闭环） |
+| 前端自动化测试 | ✅ `scripts/frontend_smoke.py`：`browser` 模式跑真实 chromium（登录 + 全部页面 + 浏览器内 API 断言），`http` 模式无需浏览器用于本地/离线；纳入 CI（G8 已闭环）。本机 glibc < 2.27 跑不了 Playwright 的 Node 驱动，故本地只验证 `http` 模式（不覆盖 JS 运行时错误） |
+| 发布前压测 | ⚠️ 仍按需：`scripts/stress_test_full.py` 保留手动触发，未进入自动门禁（真实压测需真实数据库与充足磁盘，暂不适合放进 CI） |
+| 元数据库迁移锁 | ❌ 无（见 G1/G2/G3），不属于本轮门禁范围 |
 
 ---
 
@@ -470,7 +477,7 @@ APScheduler job(task_<id>) → _job_wrapper → run_task_now
 |---|---|---|
 | S1 可复制交付 | ⚠️ 70% | 离线包与 Docker 齐备，但缺乏**版本化升级**与**数据迁移**机制 |
 | S2 可预期运维 | ⚠️ 55% | 有健康检查与日志，**无标准化指标导出**、无统一诊断包 |
-| S3 可验证质量 | ⚠️ 50% | 有测试与基线，**无 CI 门禁**、无覆盖率门槛、前端无自动化 |
+| S3 可验证质量 | ⚠️ 70% | 2026-09-19 补齐 CI 门禁 + 覆盖率门槛 + 前端自动化 + 契约单测；扣分点：覆盖率**绝对值仍低**（core+api 约 17%）、压测未自动化、全量回归存量失败尚未消化 |
 | S4 可管控安全 | ⚠️ 75% | 认证/授权/加密/审计齐备；但**缺不可变与防篡改（G13）**、缺**凭据旋转**与**密钥托管标准化** |
 | S5 可扩展兼容 | ✅ 85% | 数据库类型与存储后端均可插拔 |
 | S6 可演进架构 | ❌ 30% | **SQLite 单机 + 进程内调度**是高可用的结构性障碍 |
@@ -482,11 +489,11 @@ APScheduler job(task_<id>) → _job_wrapper → run_task_now
 | **G1** | 元数据库仅 SQLite | 无法 HA、无法横向扩展、写并发上限受限 | 引入元数据库抽象层，支持 MySQL/PostgreSQL 作为元数据库（配置切换，SQLite 仍为默认） |
 | **G2** | 调度器进程内 APScheduler | 多实例部署会重复调度；无法水平扩展 | 引入分布式锁或外部调度；至少增加"仅主节点调度"选举 |
 | **G3** | 无 per-task 互斥锁 | 同一任务可能被重叠触发 | 增加任务级锁（DB 唯一约束或 Redis 锁） |
-| **G4** | 无业务错误码体系 | 排障与集成依赖文本匹配 | 定义 `code/message/details` 三段式错误契约 |
-| **G5** | 无 API 版本前缀 | 未来不兼容变更无法演进 | 新增 `/api/v1/` 前缀，旧路径兼容一段时间 |
-| **G6** | 无 OpenAPI 文档 | 集成方只能读代码 | 引入 apispec/flask-smorest 生成 OpenAPI |
-| **G7** | CI 未跑测试 | 回归依赖人工 | GitHub Actions 增加 pytest 阶段与门禁 |
-| **G8** | 前端无自动化测试 | UI 回归靠人工 | 已有 playwright 脚本，纳入流水线 |
+| ~~**G4**~~ | ~~无业务错误码体系~~ | — | ✅ **2026-09-19 已闭环**：`core/error_codes.py` 六域 24 码 + `api/contract.py:normalize_response` 归一化钩子，任何 `/api` 错误响应必带 `code/message/details` |
+| ~~**G5**~~ | ~~无 API 版本前缀~~ | — | ✅ **已闭环**：`/api/v1` 规范前缀 + `/api` 兼容前缀（RFC 8594 弃用头），同蓝图双注册，249 条路由双双可用 |
+| ~~**G6**~~ | ~~无 OpenAPI 文档~~ | — | ✅ **已闭环**：`api/openapi.py` 自动生成 OpenAPI 3.0.3（`/api/v1/openapi.json`）+ 离线文档页 `/api/docs`，零 CDN 依赖 |
+| ~~**G7**~~ | ~~CI 未跑测试~~ | — | ✅ **已闭环**：`.github/workflows/ci.yml` 三阶段（契约+覆盖率 / 全量基线比对 / 前端），`scripts/test_gate.sh` 本地同款门禁 |
+| ~~**G8**~~ | ~~前端无自动化测试~~ | — | ✅ **已闭环**：`scripts/frontend_smoke.py`（browser 真实 chromium + http 无浏览器双模式），已纳入 CI；本机 glibc < 2.27，本地仅验证 http 模式 |
 | **G9** | 无多租户 | 无法一套平台服务多个客户/部门 | 视产品定位决定：若面向单客户交付可标记为 N/A |
 | **G10** | 无 License 授权管理 | 无法做版本/容量/时限管控 | 若需商业化，需设计授权与校验机制 |
 | **G11** | 无标准化指标导出 | 无法接入 Prometheus/客户监控体系 | 增加 `/metrics` 端点（离线环境也需可采集） |

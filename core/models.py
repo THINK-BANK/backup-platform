@@ -537,29 +537,52 @@ def compute_biz_label(biz_system, name) -> str:
     return n or "-"
 
 
-def list_records(task_id: int = None, keyword: str = None, policy_id: int = None, limit: int = 200) -> list:
-    sql = ("SELECT br.*, bt.name AS task_name, bt.host AS host_raw, "
-           "bt.biz_system AS biz_system "
-           "FROM backup_records br "
-           "LEFT JOIN backup_tasks bt ON br.task_id = bt.id")
-    params = []
-    where = []
+def _records_where(task_id: int = None, keyword: str = None,
+                   policy_id: int = None, db_type: str = None) -> tuple[str, list]:
+    """构造备份记录过滤条件（list_records / count_records 共用，保证口径一致）。"""
+    where, params = [], []
     if task_id:
         where.append("br.task_id=?")
         params.append(task_id)
     if policy_id:
         where.append("bt.policy_id=?")
         params.append(policy_id)
+    if db_type:
+        where.append("br.db_type=?")
+        params.append(db_type)
     if keyword:
         # 搜索三字段并集（设计 §4.1.3）：业务系统新值、旧任务名、主机均可命中。
         # NULL LIKE '%kw%' 在 SQLite 中为假值，不会误命中，无需 COALESCE。
         kw = f"%{keyword}%"
         where.append("(bt.name LIKE ? OR bt.host LIKE ? OR bt.biz_system LIKE ?)")
         params.extend([kw, kw, kw])
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY br.id DESC LIMIT ?"
-    params.append(limit)
+    return (" WHERE " + " AND ".join(where)) if where else "", params
+
+
+def count_records(task_id: int = None, keyword: str = None, policy_id: int = None,
+                  db_type: str = None) -> int:
+    """备份记录总数（与 list_records 同口径），供 API 分页返回 total。
+
+    ``db_type`` 必须与 :func:`list_records` 同步过滤，否则专页（如对象存储）
+    会出现「本页 1 条、总数却是全量」的分页错位。
+    """
+    clause, params = _records_where(task_id, keyword, policy_id, db_type)
+    sql = ("SELECT COUNT(*) AS n FROM backup_records br "
+           "LEFT JOIN backup_tasks bt ON br.task_id = bt.id" + clause)
+    rows = db.query(sql, params)
+    return int(rows[0]["n"]) if rows else 0
+
+
+def list_records(task_id: int = None, keyword: str = None, policy_id: int = None,
+                 db_type: str = None, limit: int = 200, offset: int = 0) -> list:
+    sql = ("SELECT br.*, bt.name AS task_name, bt.host AS host_raw, "
+           "bt.biz_system AS biz_system "
+           "FROM backup_records br "
+           "LEFT JOIN backup_tasks bt ON br.task_id = bt.id")
+    clause, params = _records_where(task_id, keyword, policy_id, db_type)
+    sql += clause
+    sql += " ORDER BY br.id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, max(0, int(offset or 0))])
     rows = db.query(sql, params)
     for r in rows:
         r["host_ip"] = normalize_host_ip(r.get("host_raw"))

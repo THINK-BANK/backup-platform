@@ -357,6 +357,54 @@ def _probe_neo4j(h, p, u, pw, db_name, t):
         return None, f"缺少 cypher-shell 且 HTTP 探测失败（{str(e)[:120]}），无法验证连接"
 
 
+def _guess_object_provider(endpoint: str) -> tuple[str, str]:
+    """按端点域名猜 provider 与 region（探活入口拿不到 extra_options 时的兜底）。"""
+    host = (endpoint or "").lower()
+    if "myqcloud" in host:                      # cos.ap-guangzhou.myqcloud.com
+        seg = host.split(".")
+        return "cos", (seg[1] if len(seg) > 2 and seg[0] == "cos" else "")
+    if "aliyuncs" in host:                      # oss-cn-hangzhou.aliyuncs.com
+        if host.startswith("oss-"):
+            return "oss", "cn-" + host[len("oss-"):].split(".")[0].replace("cn-", "")
+        return "oss", ""
+    if "myhuaweicloud" in host:
+        seg = host.split(".")
+        return "obs", (seg[1] if len(seg) > 2 and seg[0] == "obs" else "")
+    if "amazonaws" in host:
+        seg = host.split(".")
+        return "s3", (seg[1] if len(seg) > 3 and seg[0] == "s3" else "")
+    return "minio", ""
+
+
+def _probe_object_storage(h, p, u, pw, db_name, t):
+    """对象存储连通性探测：真实发起一次列桶（签名/密钥/端点同时被验证）。"""
+    from core.objectstore.providers import build_client, provider_meta
+    provider, region = _guess_object_provider(h or "")
+    meta = provider_meta(provider)
+    try:
+        cli = build_client({
+            "provider": provider,
+            "endpoint": h,
+            "port": p,
+            "access_key": u,
+            "secret_key": pw,
+            "region": region or meta.get("default_region") or "us-east-1",
+            "verify_ssl": False,
+            "retries": 0,
+        })
+        ok, msg = cli.test_connection()
+        if not ok:
+            return False, msg
+        if db_name:
+            exists = cli.bucket_exists(db_name)
+            if not exists:
+                return False, ("连接正常，但桶不存在: %s" % db_name)
+            return True, "对象存储连接正常（%s，桶 %s 可访问）" % (provider, db_name)
+        return True, "对象存储连接正常（%s）：%s" % (provider, msg)
+    except Exception as e:
+        return False, "对象存储连接失败: %s" % str(e)[:200]
+
+
 # 值为 (必需客户端列表, 探测函数)。
 # 客户端列表为空表示该探测函数自带「驱动优先 + CLI 回退 + 缺失即未知」逻辑（T06）。
 # mysql/postgresql/redis/mongodb 的 CLI 为空列表：容器镜像零安装原则只含
@@ -372,6 +420,7 @@ _PROBES = {
     "kingbase": ([], _probe_kingbase),
     "dameng": ([], _probe_dameng),
     "neo4j": ([], _probe_neo4j),
+    "object_storage": ([], _probe_object_storage),
 }
 
 

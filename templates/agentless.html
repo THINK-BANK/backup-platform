@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}无 Agent 接入{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <div>
+    <div class="page-title">
+      <i class="bi bi-shield-check text-success me-2"></i>
+      无 Agent 接入面板
+    </div>
+    <div class="page-sub">
+      被保护对象上<b>不安装任何软件、不部署常驻进程</b>。
+      本页按任务推导「本次走了哪条通道、最高侵入到哪一级」，并可对纳管主机做<b>只读取证</b>验证目标端零残留。
+    </div>
+  </div>
+  <div class="toolbar-actions">
+    <button class="btn btn-sm btn-outline-success" onclick="loadAll()">
+      <i class="bi bi-arrow-repeat me-1"></i>刷新
+    </button>
+  </div>
+</div>
+
+<!-- 汇总 -->
+<div class="row g-3 mb-3">
+  <div class="col-md-3">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">任务总数</div>
+        <div class="h3 mb-0" id="s_total">-</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">最高侵入等级（全部任务）</div>
+        <div class="h3 mb-0" id="s_worst">-</div>
+        <div class="text-muted small" id="s_worst_desc"></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">含临时二进制（A2）的任务</div>
+        <div class="h3 mb-0" id="s_temp">-</div>
+        <div class="text-muted small">执行期推送、用完即删</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="text-muted small">目标端零残留取证</div>
+        <div class="input-group input-group-sm mt-1">
+          <select class="form-select" id="a_host"></select>
+          <button class="btn btn-outline-success" onclick="runAudit()">取证</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 取证结论 -->
+<div id="auditBox" class="alert alert-secondary d-none">
+  <div class="d-flex align-items-center mb-2">
+    <b class="me-2">取证结论</b>
+    <span id="a_verdict" class="badge">-</span>
+    <span class="text-muted small ms-2" id="a_meta"></span>
+  </div>
+  <div id="a_findings" class="small"></div>
+  <div class="text-muted small mt-2">取证命令全部为只读（ps / find / crontab 列表），不写入也不删除目标端任何东西。</div>
+</div>
+
+<!-- 任务 × 通道 -->
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-diagram-3 me-1"></i>任务本次通道与侵入等级</span>
+    <input id="kw" class="form-control form-control-sm" style="width:200px" placeholder="过滤任务名/类型" oninput="render()">
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover align-middle mb-0">
+      <thead class="table-light">
+        <tr>
+          <th>任务</th>
+          <th>类型 / 模式</th>
+          <th>目标</th>
+          <th>本次通道</th>
+          <th style="width:120px">最高等级</th>
+          <th>目标端前置配置</th>
+        </tr>
+      </thead>
+      <tbody id="tb"></tbody>
+    </table>
+  </div>
+  <div class="card-footer text-muted small" id="empty_hint">加载中…</div>
+</div>
+
+<!-- 通道说明书 -->
+<div class="row g-3">
+  <div class="col-md-8">
+    <div class="card h-100">
+      <div class="card-header">通道清单与侵入等级定义</div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0">
+          <thead class="table-light"><tr><th style="width:150px">通道</th><th style="width:70px">等级</th><th>实现位置 / 说明</th></tr></thead>
+          <tbody id="chanTb"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card h-100">
+      <div class="card-header">等级含义与红线</div>
+      <div class="card-body small" id="levelBox"></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  "use strict";
+  let ROWS = [], LEVELS = {};
+
+  const LEVEL_CLASS = { A0: "bg-success", A1: "bg-success", A2: "bg-warning text-dark", A3: "bg-info text-dark", X: "bg-danger" };
+
+  async function api(method, url, body) {
+    const opt = { method, headers: { "Content-Type": "application/json" } };
+    if (body) opt.body = JSON.stringify(body);
+    const r = await fetch(url, opt);
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.message || d.error || ("HTTP " + r.status));
+    return d;
+  }
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  window.loadAll = async function () {
+    const [tasks, caps] = await Promise.all([api("GET", "/api/v1/agentless/tasks"), api("GET", "/api/v1/capabilities")]);
+    ROWS = tasks.items || [];
+    LEVELS = caps.invasion_levels || {};
+    const s = tasks.summary || {};
+    document.getElementById("s_total").textContent = s.total ?? ROWS.length;
+    document.getElementById("s_worst").innerHTML = '<span class="badge ' + (LEVEL_CLASS[s.worst_level] || "bg-secondary") + '">' + esc(s.worst_level || "-") + "</span>";
+    document.getElementById("s_worst_desc").textContent = s.worst_level_desc || "";
+    document.getElementById("s_temp").textContent = s.temp_binary_tasks ?? 0;
+
+    document.getElementById("chanTb").innerHTML = (caps.channels || []).map((c) =>
+      "<tr><td>" + esc(c.name) + '<div class="text-muted small">' + esc(c.id) + "</div></td>" +
+      '<td><span class="badge ' + (LEVEL_CLASS[c.invasiveness] || "bg-secondary") + '">' + esc(c.invasiveness) + "</span></td>" +
+      "<td><code class='small'>" + esc(c.impl) + "</code><div class='text-muted small'>" + esc(c.note) + "</div></td></tr>").join("");
+
+    document.getElementById("levelBox").innerHTML =
+      Object.entries(LEVELS).map(([k, v]) =>
+        '<div class="mb-2"><span class="badge ' + (LEVEL_CLASS[k] || "bg-secondary") + '">' + esc(k) + "</span> " + esc(v) + "</div>").join("") +
+      '<div class="mt-3 text-danger"><b>红线（任何流程都不允许）</b><ul class="mb-0 mt-1">' +
+      (caps.forbidden || []).map((f) => "<li>" + esc(f) + "</li>").join("") + "</ul></div>";
+
+    render();
+  };
+
+  window.render = function () {
+    const kw = (document.getElementById("kw").value || "").toLowerCase();
+    const rows = ROWS.filter((r) => !kw || ((r.task_name || "") + " " + (r.db_type || "")).toLowerCase().includes(kw));
+    document.getElementById("tb").innerHTML = rows.map((r) => {
+      const chans = (r.channels || []).map((c) =>
+        '<span class="badge bg-light text-dark border me-1" title="' + esc(c.reason || "") + '">' + esc(c.name) + " · " + esc(c.invasiveness) + "</span>").join("");
+      const reqs = (r.requires_target_config || []).map((x) => esc(x.item)).join("；") || (r.realtime ? "（实时链路已启用，见该库型 CDC 前置要求）" : "无");
+      return "<tr><td>" + esc(r.task_name) + '<div class="text-muted small">#' + esc(r.task_id) + "</div></td>" +
+        "<td>" + esc(r.db_type) + " / " + esc(r.backup_mode) + (r.realtime ? ' <span class="badge bg-info text-dark">实时</span>' : "") + "</td>" +
+        '<td class="small">' + esc(r.target) + "</td>" +
+        "<td>" + (chans || '<span class="text-muted">-</span>') + "</td>" +
+        '<td><span class="badge ' + (LEVEL_CLASS[r.max_level] || "bg-secondary") + '">' + esc(r.max_level) + "</span>" +
+        (r.temp_binary ? '<div class="small text-warning">临时二进制</div>' : "") + "</td>" +
+        '<td class="small">' + reqs + "</td></tr>";
+    }).join("");
+    document.getElementById("empty_hint").textContent = rows.length ? ("共 " + rows.length + " 个任务（等级为本次执行通道推导值，目标端残留以取证为准）") : "无匹配任务";
+  };
+
+  window.runAudit = async function () {
+    const sel = document.getElementById("a_host");
+    const id = sel.value;
+    if (!id) { sel.focus(); return; }
+    const box = document.getElementById("auditBox");
+    box.classList.remove("d-none", "alert-success", "alert-warning", "alert-danger", "alert-secondary");
+    document.getElementById("a_verdict").textContent = "取证中…";
+    document.getElementById("a_findings").textContent = "";
+    document.getElementById("a_meta").textContent = "";
+    try {
+      const rep = await api("GET", "/api/v1/targets/" + id + "/no-agent-audit");
+      const v = rep.verdict;
+      box.classList.add(v === "PASS" ? "alert-success" : (v === "WARN" ? "alert-warning" : "alert-danger"));
+      document.getElementById("a_verdict").textContent = v;
+      document.getElementById("a_meta").textContent = rep.host + " · " + rep.checked_at + " · 已检查 " + (rep.checked_sections || []).join(",");
+      document.getElementById("a_findings").innerHTML = (rep.findings || []).length
+        ? (rep.findings || []).map((f) => "[" + esc(f.severity) + "] " + esc(f.category) + "（等级 " + esc(f.invasion_level) + "）<br><code>" + esc(f.evidence) + "</code>").join("<hr class='my-1'>")
+        : "未发现可归因于本平台的目标端残留：无进程、无计划任务、无自启服务、无遗留临时文件。";
+    } catch (e) {
+      box.classList.add("alert-danger");
+      document.getElementById("a_verdict").textContent = "取证失败";
+      document.getElementById("a_findings").textContent = String(e.message || e);
+    }
+  };
+
+  (async function init() {
+    try {
+      const hosts = await api("GET", "/api/hosts");
+      document.getElementById("a_host").innerHTML = '<option value="">选择纳管主机…</option>' +
+        (hosts || []).map((h) => '<option value="' + h.id + '">' + esc(h.host_key || h.name) + "</option>").join("");
+    } catch (e) { /* 主机列表不可用时仅影响取证入口 */ }
+    try { await window.loadAll(); } catch (e) {
+      document.getElementById("empty_hint").textContent = "加载失败: " + (e.message || e);
+    }
+  })();
+})();
+</script>
+{% endblock %}

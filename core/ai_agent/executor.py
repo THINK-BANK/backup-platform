@@ -54,8 +54,8 @@ class ToolExecutor:
             _logger.warning(f"工具 '{tool_name}' 未注册")
             return {"ok": False, "error": f"工具 '{tool_name}' 未注册"}
 
-        # 危险工具拦截：不直接执行，返回确认标记
-        if tool.requires_confirm:
+        # 高风险工具拦截：不直接执行，返回确认标记
+        if needs_confirm(tool, args):
             reason = self._build_confirm_reason(tool, args)
             _logger.info(f"工具 '{tool_name}' 需要确认: {reason}")
             return {
@@ -201,14 +201,13 @@ class ToolExecutor:
         return {"args": cleaned}
 
     def _build_confirm_reason(self, tool: Tool, args: Dict) -> str:
-        """构造危险操作的确认提示文本。"""
+        """构造高风险操作的确认提示文本。"""
         if tool.name == "run_backup_task":
-            task_id = args.get("task_id", "未知")
-            return f"即将执行备份任务 {task_id}，该操作会对数据库产生实际影响，请确认是否继续？"
-        elif tool.name == "run_inspection":
-            scope = args.get("scope", "quick")
+            target = args.get("task_id") or args.get("task_name") or "未知"
+            return f"即将执行备份任务 {target}，请确认是否继续？"
+        if tool.name == "run_inspection":
+            scope = str(args.get("scope") or "quick").lower()
             if scope == "full":
                 return "全量巡检会对数据库性能产生较大影响，请确认是否继续？"
             return "巡检操作会短暂影响数据库性能，请确认是否继续？"
-        else:
-            return f"操作 '{tool.name}' 需要二次确认，请确认是否继续？"
+        return f"操作 '{tool.name}' 需要二次确认，请确认是否继续？"
