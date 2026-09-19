@@ -496,6 +496,7 @@ docker build -t backup-platform:local .
   - **功能级致命（此前 100% 失败）**：① 跨主机全实例恢复（PG/金仓）脚本里 `{db}` 被当成 Python 变量，构造命令即 `NameError`；② MySQL/MariaDB 全实例 tar 引用未定义的 `task`（且调用方未传真实风味），GTID 跳过分支必崩；③ PG 系远端 `dumpall` 全实例函数签名缺 `tool_path`，调用方传了该参数 → `TypeError`，函数体又引用它 → `NameError`，两条路都断。
   - **其余**：金仓 JDBC 探测兜底参数名笔误、实时同步轮询缺 `os`/`traceback`、MongoDB 恢复解压缺 `subprocess`、自定义引擎恢复校验把 `shlex.quote` 写成 `shlex_quote`、巡检报告详情缺 `json`。
   - **验证**：静态检查 186 文件 0 隐患；10 个改动模块导入冒烟通过；`test_ai_agent`/`test_ai_alert`/`test_ai_alert_taskdetail`/`test_api_contract`/`test_custom_backup` **145 passed / 8 failed**（8 项与改动前完全同一批旧断言，零回归）；新增意图消歧用例 6/6 通过。
+- **两天完整说明见 [readme_20260919.md](readme_20260919.md)**（含 v1.4.11 同期入库的对象存储备份、无 Agent 能力体系、API 契约与离线文档、代码图谱生成器、质量门禁五项新增能力）。
 
 ### v1.4.11（2026-09-19）
 
@@ -512,6 +513,7 @@ docker build -t backup-platform:local .
 - **新增开发者工具：代码图谱生成器**（`scripts/gen_code_graph.py`，纯标准库、零第三方依赖、只 `ast.parse` 不执行被分析代码）：一次扫描产出 `docs/code_graph.md`（人读）+ `docs/code_graph.json`（机器读），覆盖分层架构与模块依赖、枢纽模块、循环/越层依赖体检、332 条 REST 路由索引（METHOD+URL+handler）、页面→JS→接口链路、元数据库表访问热点、关键业务链路与「想改 X 先看哪些文件」。人工注解（链路/指引）每次生成都做存在性校验，失效即标 ⚠；`--diff` 看结构漂移，`--strict` 可在 CI 中拦截不可信数据（当前 ERROR 0）。用于替代"改一个功能要先通读几万行代码"。
 - **可重复执行的回归脚本**：新增 `tests/e2e_v1411_fixes.py`（真实执行、不仿真，10 项断言：单文件源 / 目录源 / 排除规则生效 / 源不存在提前失败且原因非空 / 目标分区写满报真实 Errno 28；MySQL 全实例成功产物校验含中文 / 2MB 工作目录**备份前**终止 / 连接失败原因分流 / 估算失效时第二道防线），实测 **10/10 通过**（免密 MySQL 实例 + tmpfs 真实制造 ENOSPC）。运行：`.venv/bin/python tests/e2e_v1411_fixes.py`（可用 `--mysql-host/--mysql-port/--mysql-pwd` 指定实例）。
 - **回归**：文件备份端到端 **13/13 通过**（单文件→远端、目录+排除规则、源不存在、单文件→本地、打包前文件被删五类场景，真实 SSH 环境 192.168.220.137）；全实例端到端 **12/12 通过**（含 2MB tmpfs 上真实制造的 ENOSPC，验证「备份前终止」与写满时的诊断均生效）。全量 pytest 与 `git archive HEAD` 快照同命令基线对比 **170 failed / 292 passed / 1 skipped / 30 errors，与基线完全一致，零回归**（failed 项均为既有用例间共享临时库导致的存量冲突）。
+- **完整说明见 [readme_20260919.md](readme_20260919.md)**（同批入库的还有对象存储备份、无 Agent 能力体系、API 契约与代码图谱生成器）。
 
 ### v1.4.10（2026-09-17）
 
