@@ -120,7 +120,7 @@ def _run_file_case(tmp, task_id, name, src_paths, excludes=None, dst_dir=None):
     return res, getattr(res, "backup_path", "")
 
 
-def test_file_backups(tmp):
+def test_file_backups(tmp, tiny_dir):
     src = os.path.join(tmp, "src")
     os.makedirs(src)
     single = os.path.join(src, "only-one.txt")
@@ -175,7 +175,7 @@ def test_file_backups(tmp):
         ok("F4 源不存在提前失败", res.message[:80])
 
     # F5 目标分区写满 → 失败原因带真实系统错误
-    tiny = _ensure_tiny_fs(os.path.join(tmp, "tiny"), size_kb=1024)
+    tiny = _ensure_tiny_fs(tiny_dir, size_kb=1024)
     if not tiny:
         skip("F5 目标盘写满", "无法挂载 tmpfs（需 root / 特权）")
     else:
@@ -223,7 +223,7 @@ def _mysql_reachable(host, port, user, pwd):
         return False
 
 
-def test_mysql_full_instance(tmp, host, port, user, pwd):
+def test_mysql_full_instance(tmp, host, port, user, pwd, tiny_dir):
     if not os.path.isfile(DUMP_TOOL):
         skip("M* MySQL 全实例", "本机无 mysqldump: %s" % DUMP_TOOL)
         return
@@ -250,7 +250,7 @@ def test_mysql_full_instance(tmp, host, port, user, pwd):
         bad("M1 全实例备份真实产物", str(e)[:200])
 
     # M2 备份前空间预检（2MB tmpfs 作为临时工作目录）
-    tiny = _ensure_tiny_fs("/tmp/e2e_tiny_2m", size_kb=2048)
+    tiny = _ensure_tiny_fs(tiny_dir, size_kb=2048)
     if not tiny:
         skip("M2 备份前空间预检", "无法挂载 tmpfs")
     else:
@@ -328,6 +328,9 @@ def main():
     ap.add_argument("--mysql-port", default="3399")
     ap.add_argument("--mysql-user", default="root")
     ap.add_argument("--mysql-pwd", default="")
+    ap.add_argument("--tiny-dir", default="/tmp/e2e_tiny_2m",
+                    help="极小文件系统挂载点（容器无 mount 权限时可 docker run --tmpfs "
+                         "/bpwork:size=2m 后传 /bpwork）")
     args = ap.parse_args()
 
     tmp = tempfile.mkdtemp(prefix="e2e_v1411_")
@@ -338,14 +341,14 @@ def main():
     gd.dedup_file = lambda *a, **k: {"saved_bytes": 0}
     try:
         print("== 文件备份（问题 1）==")
-        test_file_backups(tmp)
+        test_file_backups(tmp, args.tiny_dir)
         print("\n== MySQL 全实例备份（问题 2）==")
         test_mysql_full_instance(tmp, args.mysql_host, args.mysql_port,
-                                 args.mysql_user, args.mysql_pwd)
+                                 args.mysql_user, args.mysql_pwd, args.tiny_dir)
     finally:
         gd.dedup_file = _orig_dedup
         config.BACKUP_ROOT = _orig_root
-        for p in ("/tmp/e2e_tiny_2m", os.path.join(tmp, "tiny")):
+        for p in (args.tiny_dir, os.path.join(tmp, "tiny")):
             if os.path.ismount(p):
                 subprocess.run(["umount", p], capture_output=True)
         shutil.rmtree(tmp, ignore_errors=True)
