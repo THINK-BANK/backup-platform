@@ -260,7 +260,7 @@ def _probe_kingbase(h, p, u, pw, db_name, t):
     client = _first_client("ksql", "sys_psql", "psql")
     if not client:
         # 零安装原则：平台自带 JDBC 驱动（金仓兜底 PG 驱动），缺 CLI 时兜底
-        return _probe_via_jdbc("kingbase", _h, _p, _u, _pw, _t)
+        return _probe_via_jdbc("kingbase", h, p, u, pw, t)
     env = os.environ.copy()
     if pw:
         env["KINGBASE_PASSWORD"] = pw

@@ -317,10 +317,10 @@ for f in "$WORK"/dbs/*.dump; do
   [ -e "$f" ] || continue
   db=$(basename "$f" .dump)
   EXISTS=$({create_via} -h {host} -p {port} -U {user} -d {maint} -tAc \\
-    "SELECT 1 FROM pg_database WHERE datname='{db}'" 2>/dev/null || true)
+    "SELECT 1 FROM pg_database WHERE datname='$db'" 2>/dev/null || true)
   [ "$EXISTS" = "1" ] || {create_via} -h {host} -p {port} -U {user} -d {maint} \\
-    -c "CREATE DATABASE \\"{db}\\"" || {{ echo "[FAIL] $db (createdb)"; FAIL=$((FAIL+1)); continue; }}
-  if {loop_restore} -h {host} -p {port} -U {user} -d "{db}" --no-owner "$f"; then
+    -c "CREATE DATABASE \\"$db\\"" || {{ echo "[FAIL] $db (createdb)"; FAIL=$((FAIL+1)); continue; }}
+  if {loop_restore} -h {host} -p {port} -U {user} -d "$db" --no-owner "$f"; then
     echo "[OK] $db"; OK=$((OK+1))
   else
     echo "[FAIL] $db (restore)"; FAIL=$((FAIL+1))

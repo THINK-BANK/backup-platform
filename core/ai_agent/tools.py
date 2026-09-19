@@ -7,6 +7,7 @@ inspection / db），不再走内部 HTTP 调用，避免 session/cookie 认证�
 显著降低延迟。
 """
 
+import json
 import os
 import shutil
 from dataclasses import dataclass, field
@@ -258,6 +259,41 @@ _DB_TYPE_ALIASES = {
     "object_storage": "对象存储",
     "file": "文件",
 }
+
+
+def _apply_intent_tiebreak(scored: List[tuple], intent_text: str) -> tuple:
+    """用意图词消解同分候选（"物理/逻辑/增量/全量/实时"等）。
+
+    仅当用户话里出现**强意图词**（_INTENT_TOKENS）时才重排：命中该意图的任务
+    整体前移；若命中者恰好唯一，则可直接执行，避免无谓地打断用户澄清。
+    只命中 _INTENT_WEAK_TOKENS（"备份/backup"）时无法区分候选，保持原序。
+
+    Args:
+        scored: _match_tasks_scored 的产物 [(分数, 任务), ...]，已按分数降序
+        intent_text: 用户原话 + 备份类型（如 "bpm1 物理备份"）
+
+    Returns:
+        (ranked, unique_intent)
+        ranked: 重排后的 [(分数, 任务), ...]
+        unique_intent: True 表示意图命中唯一，可据此直接执行
+    """
+    text = str(intent_text or "").lower()
+    hit_intents = [name for name, tokens in _INTENT_TOKENS.items()
+                   if any(tok.lower() in text for tok in tokens)]
+    if not hit_intents:
+        return list(scored), False
+
+    def _hit(task: Dict) -> bool:
+        blob = " ".join(str(task.get(k) or "") for k in (
+            "name", "db_name", "backup_mode", "backup_mode_display",
+            "backup_type", "db_type", "db_type_display")).lower()
+        return any(tok.lower() in blob
+                   for intent in hit_intents for tok in _INTENT_TOKENS[intent])
+
+    hits = [item for item in scored if _hit(item[1])]
+    rest = [item for item in scored if not _hit(item[1])]
+    ranked = hits + rest
+    return (ranked, True) if len(hits) == 1 else (ranked, False)
 
 
 def _run_backup_task_executor(args: Dict, context: Dict) -> Dict:

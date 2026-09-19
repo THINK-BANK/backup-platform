@@ -379,8 +379,8 @@ class CustomDBEngine(BackupEngine):
         ts = self._timestamp()
         check_script = (
             script
-            + f"\necho PLATFORM_BACKUP_FILE={shlex_quote(record.get('backup_path') or '')}\n"
-            + f"echo PLATFORM_CHECKSUM={shlex_quote(record.get('checksum') or '')}\n"
+            + f"\necho PLATFORM_BACKUP_FILE={shlex.quote(record.get('backup_path') or '')}\n"
+            + f"echo PLATFORM_CHECKSUM={shlex.quote(record.get('checksum') or '')}\n"
         )
         client = remote_dump._connect(ssh_host)
         try:

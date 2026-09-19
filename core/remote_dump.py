@@ -787,7 +787,8 @@ def _build_mysql_dump_shell(client, task: dict, ssh_host: dict, mysqldump_bin: s
         args.append(db_name)
     else:
         return {"fmt": "multi-db-tar", "shell": "", "enable": True,
-                "suffix": ".tar.gz", "port": int(port), "extra": extra}
+                "suffix": ".tar.gz", "port": int(port), "extra": extra,
+                "flavor": flavor}
 
     if schema_only:
         args.append("--no-data")
@@ -895,7 +896,8 @@ def _remote_mysql_dump(task: dict, ssh_host: dict, compress: int, extra_args: st
     if spec["fmt"] == "multi-db-tar":
         # 全实例：逐库 .sql → tar.gz（默认排除系统库）
         data = _remote_mysql_full_instance_tar(
-            client, mysqldump_bin, remote_cnf, spec["port"], spec["extra"])
+            client, mysqldump_bin, remote_cnf, spec["port"], spec["extra"],
+            spec.get("flavor") or "")
         return data, "multi-db-tar", True
     shell = spec["shell"]
     enable = spec["enable"]
@@ -1168,7 +1170,8 @@ def _pg_family_full_instance_tar(client, cfg: dict, dump_bin: str,
 
 
 def _pg_family_dumpall_stream(client, cfg: dict,
-                              user: str, pw: str, port: int) -> bytes:
+                              user: str, pw: str, port: int,
+                              tool_path: str = "") -> bytes:
     """整实例 SQL 流模式（extra.all_db_mode="dumpall"）：dumpall 直接输出。
 
     纯 SQL 文本、单文件；大库恢复较慢，但最贴近原生全实例语义。
@@ -2134,7 +2137,8 @@ def _remote_mysql_dump_to_file(task: dict, ssh_host: dict, final_path: str,
         if spec["fmt"] == "multi-db-tar":
             # 全实例：远端逐库 dump 后 tar.gz 拉回（产物本身是 tar 流，暂无续传形态）
             data = _remote_mysql_full_instance_tar(
-                client, mysqldump_bin, remote_cnf, spec["port"], spec["extra"])
+                client, mysqldump_bin, remote_cnf, spec["port"], spec["extra"],
+                spec.get("flavor") or "")
             with open(final_path, "wb") as lf:
                 lf.write(data)
             return {"path": final_path, "size": len(data), "compressed": True,
@@ -2665,7 +2669,8 @@ def _remote_mysql_restore(task: dict, ssh_host: dict, dump_bytes: bytes) -> None
 
 
 def _remote_mysql_full_instance_tar(client, mysqldump_bin: str, remote_cnf: str,
-                                    port: int, extra: dict) -> bytes:
+                                    port: int, extra: dict,
+                                    db_type: str = "") -> bytes:
     """MySQL/MariaDB 全实例：逐库 .sql（--databases 保证含 CREATE DATABASE/USE）
     → tar.gz + manifest。默认排除系统库（SYSTEM_DBS），可含 schema_only/data_only。
     """
@@ -2690,7 +2695,7 @@ def _remote_mysql_full_instance_tar(client, mysqldump_bin: str, remote_cnf: str,
     # 实例时逐库 dump 的 SET @@GLOBAL.GTID_PURGED 触发 1840。
     # 用户可通过 extra_options.gtid_purged=true 显式保留 GTID 信息。
     # MariaDB 的 mysqldump 无 --set-gtid-purged 选项，按 db_type 跳过。
-    if not extra.get("gtid_purged") and (task.get("db_type") != "mariadb"):
+    if not extra.get("gtid_purged") and (db_type != "mariadb"):
         dump_flags += " --set-gtid-purged=OFF"
 
     ts = time.strftime("%Y-%m-%dT%H:%M:%S%z")

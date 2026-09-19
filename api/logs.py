@@ -28,7 +28,7 @@ from flask import jsonify, request, send_file
 from auth import login_required
 from core import db, models
 import config
-from . import api_bp
+from . import api_bp, contract
 
 _SAFE = re.compile(r"^[A-Za-z0-9_.\-]+$")
 _MAX_READ_BYTES = 8 * 1024 * 1024      # 单次读取上限

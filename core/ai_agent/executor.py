@@ -17,7 +17,7 @@ from typing import Dict, Any, Optional
 
 import core.db as db
 
-from .tools import ToolRegistry, Tool
+from .tools import ToolRegistry, Tool, needs_confirm
 
 _logger = db.get_logger("ai_agent.executor")
 

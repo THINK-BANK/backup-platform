@@ -19,7 +19,7 @@ import core.models as models
 from auth import login_required
 from core import ai_alert as ai_alert_engine
 from core.ai_alert import PROVIDER_PRESETS
-from . import api_bp
+from . import api_bp, contract
 from flask import request, jsonify
 
 

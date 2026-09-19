@@ -14,7 +14,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 **备份 · 恢复 · PITR · 数据迁移 · 数据同步 · 数据对比 · 预校验 · 克隆 · 演练 · 巡检 · AI 告警**
 
-[![Version](https://img.shields.io/badge/Version-v1.4.11-0D9488)](#更新日志)
+[![Version](https://img.shields.io/badge/Version-v1.4.12-0D9488)](#更新日志)
 [![License](https://img.shields.io/badge/License-MIT-green)](#许可证)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED)](#docker-部署含离线运行)
@@ -487,6 +487,15 @@ docker build -t backup-platform:local .
 - 默认账号请立即修改（首登会标记 `must_change_password`）；生产环境建议限制来源 IP
 
 ## 更新日志
+
+### v1.4.12（2026-09-19）
+
+- **批量修复「引用了但从未导入/定义」的运行时崩溃（9 组、11 处）**
+  - **背景**：用户连续反馈两处 `NameError`（AI 助手页 `needs_confirm`、操作日志页 `contract`），属同一类"用了但没导入"缺陷。本轮改为新增基于 `symtable` 的全仓静态检查（186 个文件）一次扫出全部同类隐患，逐个核实后修复，检查器复跑 **0 处残留**。
+  - **用户可见崩溃**：① 操作日志页 `contract` 未导入（`api/logs.py`）；② AI 告警页 `contract` 未导入（`api/ai_alert.py`，同一隐患尚未爆出）；③ AI 助手按自然语言点名执行任务时 `_apply_intent_tiebreak` **全项目从未定义**（必崩）——已按 `_INTENT_TOKENS` 既有设计补齐：命中"物理/逻辑/增量/全量/实时"等强意图词的任务整体前移，命中唯一时可直接执行，命中多个或只有"备份"这类弱词则交回用户澄清。
+  - **功能级致命（此前 100% 失败）**：① 跨主机全实例恢复（PG/金仓）脚本里 `{db}` 被当成 Python 变量，构造命令即 `NameError`；② MySQL/MariaDB 全实例 tar 引用未定义的 `task`（且调用方未传真实风味），GTID 跳过分支必崩；③ PG 系远端 `dumpall` 全实例函数签名缺 `tool_path`，调用方传了该参数 → `TypeError`，函数体又引用它 → `NameError`，两条路都断。
+  - **其余**：金仓 JDBC 探测兜底参数名笔误、实时同步轮询缺 `os`/`traceback`、MongoDB 恢复解压缺 `subprocess`、自定义引擎恢复校验把 `shlex.quote` 写成 `shlex_quote`、巡检报告详情缺 `json`。
+  - **验证**：静态检查 186 文件 0 隐患；10 个改动模块导入冒烟通过；`test_ai_agent`/`test_ai_alert`/`test_ai_alert_taskdetail`/`test_api_contract`/`test_custom_backup` **145 passed / 8 failed**（8 项与改动前完全同一批旧断言，零回归）；新增意图消歧用例 6/6 通过。
 
 ### v1.4.11（2026-09-19）
 
