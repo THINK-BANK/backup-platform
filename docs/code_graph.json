@@ -1,0 +1,6154 @@
+{
+ "generated_at": "2026-09-19T11:25:52",
+ "modules": {
+  "core/__init__.py": {
+   "loc": 3,
+   "layer": "L0 全局基座",
+   "deps": [],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "AIDBM（AI 原生智能数据库灾备管理平台）- 核心包。"
+  },
+  "core/ai_alert.py": {
+   "loc": 1935,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.ai_secret",
+    "core.db",
+    "core.models",
+    "core.notifier",
+    "core.storage_backends.minio"
+   ],
+   "rdeps": [
+    "api/ai_agent.py",
+    "api/ai_alert.py",
+    "api/system.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "AIPredictor",
+    "AIPredictor.analyze_backup_failure_risk",
+    "AIPredictor.analyze_backup_verify_risk",
+    "AIPredictor.analyze_drill_compliance",
+    "AIPredictor.analyze_link_health",
+    "AIPredictor.analyze_storage_risk",
+    "AIPredictor.get_config",
+    "AIPredictor.get_prediction_stats",
+    "AIPredictor.get_recent_predictions",
+    "AIPredictor.get_safe_config",
+    "AIPredictor.predict_with_ai",
+    "AIPredictor.predict_with_model",
+    "AIPredictor.run_all_checks",
+    "AIPredictor.save_config",
+    "DEFAULT_AI_CONFIG",
+    "DEFAULT_MODEL_MAX_TOKENS",
+    "DEFAULT_MODEL_TIMEOUT_SEC",
+    "DEFAULT_PROMPT_TEMPLATE",
+    "DEFAULT_SUGGESTION",
+    "ERROR_SUMMARY_MAX_CHARS",
+    "EVIDENCE_RECORD_LIMIT",
+    "PROVIDER_PRESETS",
+    "RISK_LEVELS",
+    "SUGGESTION_RULES",
+    "TASK_DETAIL_TOP_N",
+    "_LEVEL_RANK",
+    "suggest_action"
+   ],
+   "doc": "AI 预测告警引擎（AIPredictor）。 基于规则 + 轻量统计（滑动窗口失败率、线性趋势外推）预测五类风险： backup_fail 备份失败 storage_full 存储容量将满 link_degraded 容灾链路劣化 drill_overdue 演练超期 rpo_breach RPO 目标未达标 对 r"
+  },
+  "core/ai_secret.py": {
+   "loc": 70,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config"
+   ],
+   "rdeps": [
+    "core/ai_alert.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "decrypt_api_key",
+    "encrypt_api_key"
+   ],
+   "doc": "AI 模型密钥加密模块。 采用 XOR + base64 加密方式，与 core/db.py 的 encrypt_secret/decrypt_secret 保持一致的轻量混淆风格（非高强度加密，生产环境请用密钥管理服务）。 加密密钥优先级：环境变量 AI_SECRET_KEY → 环境变量 SECRET_KEY → "
+  },
+  "core/clone_service.py": {
+   "loc": 515,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.itsm",
+    "core.models",
+    "core.remote_dump",
+    "core.restore_extras",
+    "core.restore_extras_clone"
+   ],
+   "rdeps": [
+    "api/clone.py",
+    "api/itsm.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "CloneService",
+    "CloneService.approve_clone",
+    "CloneService.destroy_clone",
+    "CloneService.expire_clone",
+    "CloneService.expire_due_clones",
+    "CloneService.get_clone",
+    "CloneService.list_clones",
+    "CloneService.reject_clone",
+    "CloneService.request_clone",
+    "CloneService.verify_clone",
+    "STATUS_APPROVED",
+    "STATUS_CREATING",
+    "STATUS_DELETED",
+    "STATUS_EXPIRED",
+    "STATUS_FAILED",
+    "STATUS_PENDING",
+    "STATUS_READY",
+    "STATUS_REJECTED",
+    "_CLONE_ENGINE"
+   ],
+   "doc": "克隆服务（CloneService）：把零散的 `mysql_clone_to_test` / `pg_clone_to_test` + VDB 实例标准化为「申请 → 审批 → 拉起 VDB → 生命周期 → 自动销毁」的标准服务。 职责 ---- - request_clone：开发自助申请 → 建 clone_r"
+  },
+  "core/crypto_pool.py": {
+   "loc": 260,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [
+    "api/system.py",
+    "core/engines/file.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MAGIC",
+    "NONCE_LEN",
+    "SALT_LEN",
+    "TAG_LEN",
+    "VERSION",
+    "decrypt_file",
+    "encrypt_file",
+    "is_encrypted",
+    "self_test"
+   ],
+   "doc": "存储池加密（Encryption at Rest）—— 参照鼎甲迪备白皮书 §2.6 备份数据加密。 设计目标：让备份产物在落盘后以「密文」存储，即使存储介质被物理拿走也无法 直接读取明文（对应白皮书\"备份数据加密\"\"防止数据泄露\"）。 方案：AES-256-GCM 信封式加密（AEAD，自带完整性校验） - 主密钥从"
+  },
+  "core/data_mining.py": {
+   "loc": 550,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/datamining.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DB_TYPE_SCHEMAS",
+    "DEFAULT_COLUMNS",
+    "DataMiner",
+    "DataMiner.delete_export",
+    "DataMiner.export_anonymized",
+    "DataMiner.get_export",
+    "DataMiner.list_db_schemas",
+    "DataMiner.list_exports",
+    "DataMiner.list_rule_templates",
+    "DataMiner.preview_mask_rules",
+    "DataMiner.suggest_columns_for_record",
+    "PII_MASK_RULES",
+    "RULE_DESCRIPTIONS",
+    "RULE_TEMPLATES",
+    "VALID_RULES"
+   ],
+   "doc": "数据价值挖掘：备份数据脱敏导出（Data Mining / Anonymized Export）。 把备份数据「脱敏后导出供分析」，提升数据资产价值（对应蓝图难点3解决方案）。 真实环境应从 backup_records / backup_sets 读出对应引擎的导出/解压结果；本期在 DEMO_MODE 或缺少真实导"
+  },
+  "core/drill.py": {
+   "loc": 416,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.models",
+    "core.policy"
+   ],
+   "rdeps": [
+    "api/drills.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "get_baseline",
+    "get_drill_schedule",
+    "get_trend",
+    "run_drill",
+    "run_drill_async",
+    "run_scheduled_drill",
+    "save_drill_schedule"
+   ],
+   "doc": "容灾演练引擎：排程→执行→评估→闭环。"
+  },
+  "core/email_template.py": {
+   "loc": 442,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [
+    "api/system.py",
+    "core/inspection.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_BADGE_META",
+    "_STATUS_META",
+    "render_backup_result",
+    "render_inspection_alert",
+    "render_test_email"
+   ],
+   "doc": "邮件 HTML 模板生成器。 设计原则： - 兼容主流邮箱（QQ/163/Gmail/Outlook/企业微信邮箱） - 全部用内联 CSS（外部 <style>/<head> 在很多客户端被剥除） - 移动端友好：max-width 600、padding 适中、字号可读 - 状态色用 Tailwind 风：ok=#"
+  },
+  "core/global_dedup.py": {
+   "loc": 211,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [
+    "api/dedup.py",
+    "core/engines/file.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DEFAULT_BLOCK_SIZE",
+    "dedup_bytes",
+    "dedup_file",
+    "global_stats",
+    "reset_index"
+   ],
+   "doc": "全局重删（Global Deduplication）引擎 —— 参照鼎甲迪备白皮书 §2.4。 核心思想（源端/全局重删）： - 备份产出按固定大小切片（默认 4MB），对每块计算内容哈希（sha256）； - 以 block_hash 为内容寻址键，跨任务、跨备份集、跨时间点复用同一物理块； - 新块首次出现时落盘并"
+  },
+  "core/hetero_convert.py": {
+   "loc": 113,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [
+    "HeteroConvert",
+    "HeteroConvert.convert",
+    "VALID_DST",
+    "VALID_SRC"
+   ],
+   "doc": "异构数据转换（hetero_convert）：将 Oracle 备份集转换为目标分布式库 （kingbase / dameng / mysql）可加载的备份集 / 脚本，产物作为迁移演练的「数据燃料」。 - 真实环境：调用对应导出 / 导入工具（expdp/impdp、ora2pg、mysqldump 等）完成转换。 "
+  },
+  "core/inspection.py": {
+   "loc": 210,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.email_template",
+    "core.models",
+    "core.notifier",
+    "core.probe",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "api/inspection.py",
+    "core/ai_agent/tools.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "run_inspection"
+   ],
+   "doc": "备份任务巡检引擎：对备份任务做健康体检，发现隐患第一时间通知。 巡检项： 1. 连通性：对源库做一次轻量连通性探测（core.probe） 2. 调度：是否启用且配置了调度（否则长期无备份） 3. 上次运行：最近一次状态是否为失败 / 是否从未运行 判定： - fail：连通性失败 或 最近一次备份失败 - warn："
+  },
+  "core/itsm.py": {
+   "loc": 268,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/itsm.py",
+    "core/clone_service.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DingTalkITSMAdapter",
+    "ITSMAdapter",
+    "ITSMAdapter.approve_ticket",
+    "ITSMAdapter.callback",
+    "ITSMAdapter.create_ticket",
+    "ITSMAdapter.query_status",
+    "ITSMAdapter.reject_ticket",
+    "InternalITSMAdapter",
+    "InternalITSMAdapter.approve_ticket",
+    "InternalITSMAdapter.callback",
+    "InternalITSMAdapter.create_ticket",
+    "InternalITSMAdapter.query_status",
+    "InternalITSMAdapter.reject_ticket",
+    "ServiceNowITSMAdapter",
+    "VALID_REF_TYPES",
+    "VALID_SYSTEMS",
+    "VALID_TICKET_STATUS",
+    "_ADAPTERS",
+    "_ExternalITSMStub",
+    "_ExternalITSMStub.approve_ticket",
+    "_ExternalITSMStub.callback",
+    "_ExternalITSMStub.create_ticket",
+    "_ExternalITSMStub.query_status",
+    "_ExternalITSMStub.reject_ticket",
+    "get_itsm_adapter"
+   ],
+   "doc": "ITSM 适配层：工单创建 / 审批 / 回调，支持多后端可插拔。 设计目标 -------- - 抽象基类 `ITSMAdapter` 统一对外接口：`create_ticket / query_status / approve_ticket / reject_ticket / callback`。 - `Inter"
+  },
+  "core/lifecycle.py": {
+   "loc": 277,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.storage_backends",
+    "core.tier_replication"
+   ],
+   "rdeps": [
+    "api/lifecycle.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DEFAULT_LIFECYCLE_CONFIG",
+    "LifecycleEngine",
+    "LifecycleEngine.get_config",
+    "LifecycleEngine.get_status",
+    "LifecycleEngine.run_once",
+    "LifecycleEngine.save_config",
+    "_CONFIG_KEY"
+   ],
+   "doc": "冷热分级生命周期引擎（LifecycleEngine）。 按策略把备份集在 L1（MinIO 热数据）→ L2（S3 冷数据）间 流转 / 降级 / 到期清理（L3 源端本地路径为复制时的终态导出，不参与生命周期流转）。 策略来源：system_config.lifecycle_config（JSON），缺省使用 DE"
+  },
+  "core/migration.py": {
+   "loc": 168,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.scheduler"
+   ],
+   "rdeps": [
+    "api/migration.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MigrationPlan",
+    "MigrationPlan.create_plan",
+    "MigrationPlan.get_plan",
+    "MigrationPlan.get_status",
+    "MigrationPlan.list_plans",
+    "MigrationPlan.start_mid",
+    "MigrationPlan.start_post",
+    "MigrationPlan.start_pre",
+    "MigrationPlan.verify_golden",
+    "STAGE_MID",
+    "STAGE_POST",
+    "STAGE_PRE"
+   ],
+   "doc": "迁移全流程保护（MigrationPlan）：把\"一次性迁移\"变成可回退的三阶段编排。 三阶段 ------ - pre （迁移前）：对源端生产库做全量备份作为「黄金回退点」，记录 golden_backup_record_id；verify_golden 做恢复验证（DEMO 下仿真校验，真实下 可调用恢复演练 / "
+  },
+  "core/notifier.py": {
+   "loc": 161,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/ai_alert.py",
+    "core/inspection.py",
+    "core/scheduler.py",
+    "core/sync.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "Notifier",
+    "Notifier.notify"
+   ],
+   "doc": "通知模块：备份成功/失败后通过 Webhook / 钉钉 / 企业微信 / 飞书 / 邮件 发送提醒。 通知渠道在 config.NOTIFY_DEFAULTS[\"channels\"] 中配置（list of dict）。 零额外依赖：HTTP 用标准库 urllib，邮件用 smtplib。"
+  },
+  "core/plugin_catalog.py": {
+   "loc": 600,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.db",
+    "core.models",
+    "core.plugin_installer",
+    "core.plugin_runtime",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "api/plugins.py",
+    "core/engines/base.py",
+    "core/plugin_installer.py",
+    "core/plugin_runtime.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MANIFESTS_DIR",
+    "categories",
+    "check_installed",
+    "check_installed_on_host",
+    "detect_os",
+    "detect_package_manager",
+    "external_plugins_for_host",
+    "get_plugin",
+    "list_plugins",
+    "load_all",
+    "recommend_for_host",
+    "recommended_for_db_type",
+    "which_any"
+   ],
+   "doc": "备份依赖插件目录（Plugin Catalog）。 每个数据库/文件备份依赖一组第三方客户端工具（如 xtrabackup、mariabackup、 pgbackrest、mongodump、redis-cli 等）。数据库自带工具（RMAN、mysqldump、pg_dump、 dmrman、sys_dump 等）不"
+  },
+  "core/plugin_runtime.py": {
+   "loc": 175,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.engines.file",
+    "core.plugin_catalog",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "api/plugins.py",
+    "core/engines/base.py",
+    "core/plugin_catalog.py",
+    "core/plugin_installer.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "bundled_physical_tools",
+    "external_plugin_ids_for_db_type",
+    "external_plugins_for_db_type",
+    "remote_bin_version",
+    "remote_check_clients",
+    "remote_detect_os",
+    "remote_detect_package_manager"
+   ],
+   "doc": "插件运行时分发（Plugin Runtime）：工具分类映射 + 远端探测辅助。 职责边界： - 「数据库自带物理工具」硬编码映射（引擎直接调用，不在 manifests 中）： oracle→rman、postgresql→pg_basebackup、kingbase→sys_basebackup、dameng→dm"
+  },
+  "core/policy.py": {
+   "loc": 153,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.models"
+   ],
+   "rdeps": [
+    "core/drill.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "ProtectionPolicyService",
+    "ProtectionPolicyService.default_policy",
+    "ProtectionPolicyService.is_valid_level",
+    "ProtectionPolicyService.resolve",
+    "ProtectionPolicyService.resolve_rpo_rto"
+   ],
+   "doc": "保护策略服务（ProtectionPolicyService）。 把\"分层分级保护\"从口头约定变成可计算的对象： - 按保护等级（core / important / general）提供默认 RPO/RTO 与备份/复制/保留策略； - 提供 resolve(task) 解析\"生效策略\"：任务显式绑定的策略优先，否则"
+  },
+  "core/probe.py": {
+   "loc": 420,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.db",
+    "core.jdbc"
+   ],
+   "rdeps": [
+    "core/db_migrate.py",
+    "core/disaster_link.py",
+    "core/inspection.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_PROBES",
+    "probe_db_connection"
+   ],
+   "doc": "数据库连通性探测：在巡检 / 数据同步前，对源/目标库做一次轻量级连通性检查。 零额外依赖：优先用各库 Python 驱动探测（与迁移/同步引擎同源，Docker 镜像 零安装原则下无需命令行客户端），CLI 仅作回退。 - 返回 (True, msg) 表示连接正常 - 返回 (False, msg) 表示连接失败（"
+  },
+  "core/restore_verify.py": {
+   "loc": 124,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines",
+    "core.engines.base",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/restore_verify.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "run_restore_verify_policy"
+   ],
+   "doc": "恢复校验执行器。 提供恢复校验策略的调度入口与立即执行入口： - run_restore_verify_policy(policy_id): 对指定策略执行一次校验，生成测试报告。"
+  },
+  "core/ssh_hosts.py": {
+   "loc": 181,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.db"
+   ],
+   "rdeps": [
+    "api/hosts.py",
+    "api/plugins.py",
+    "core/deploy.py",
+    "core/engines/base.py",
+    "core/inspection.py",
+    "core/plugin_catalog.py",
+    "core/plugin_installer.py",
+    "core/remote_dump.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "HOST_FIELDS",
+    "create_host",
+    "delete_host",
+    "get_host",
+    "list_hosts",
+    "test_connection",
+    "update_host"
+   ],
+   "doc": "SSH 主机纳管：无 Agent 远程备份所需的主机凭据存储与连接测试。 - 凭据（密码 / 私钥）加密存储于 SQLite 的 ssh_hosts 表 - host_key 唯一标识一台主机，格式 \"user@hostname:port\"，供 FileBackupEngine 引用 - test_connection"
+  },
+  "core/storage.py": {
+   "loc": 97,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "StorageManager",
+    "StorageManager.apply_retention",
+    "StorageManager.ensure",
+    "StorageManager.list_backup_files",
+    "StorageManager.local_dir",
+    "StorageManager.upload_to_remote"
+   ],
+   "doc": "存储管理：本地落盘目录、SFTP 远程上传、备份保留策略清理。 真实备份文件统一存放于 config.BACKUP_ROOT/<db_type>/<id>_<name>/ 下。 保留策略按“保留份数”与“保留天数”两者中更严格者执行。"
+  },
+  "core/sync.py": {
+   "loc": 85,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.notifier",
+    "core.sync.engine"
+   ],
+   "rdeps": [
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "run_sync"
+   ],
+   "doc": "数据同步兼容入口。 新版同步引擎采用 DataX/LinkUp 风格：Source Reader → 统一 Java 类型 → Sink Writer， 支持表级同步、字段映射、写入模式（append/overwrite/upsert/create_if_not_exists）、 增量同步与实时同步（Flink CDC"
+  },
+  "core/synthesize.py": {
+   "loc": 82,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.engines",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/synthesize.py",
+    "core/scheduler.py",
+    "core/synthetic.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "run_auto_synthesis"
+   ],
+   "doc": "自动合成全量调度封装（落实 CDM \"系统内自动合成全量\"）。 PDF 要点：永久增量（永远只做增量）→ 系统定期把增量链自动合成全量， 合成产物以原始格式可直接挂载即时恢复，中间增量副本由生命周期策略回收。 本模块提供： - run_auto_synthesis(): 遍历所有任务，对\"存在可合并增量\"的任务触发合成"
+  },
+  "core/tier_replication.py": {
+   "loc": 296,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.storage_backends"
+   ],
+   "rdeps": [
+    "api/storage.py",
+    "core/ferry_inbox.py",
+    "core/lifecycle.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "get_replication_status",
+    "replicate_async",
+    "replicate_to_tiers"
+   ],
+   "doc": "三级存储复制引擎：备份完成后自动执行 L1→L2→L3 的级联复制。 架构： L1 本地（备份第一落点，由引擎直接写入） ↓ 备份成功后自动触发 L2 MinIO 热数据（高频访问、快速恢复） ↓ 可选：热数据到期后 L3 S3 冷数据（长期归档、低成本容灾） 调用入口：scheduler._execute_backu"
+  },
+  "core/jdbc.py": {
+   "loc": 551,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.native_conn"
+   ],
+   "rdeps": [
+    "api/jdbc.py",
+    "api/tasks.py",
+    "core/cdc/oracle_logminer.py",
+    "core/db_migrate.py",
+    "core/probe.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DEFAULT_PORTS",
+    "DRIVERS_DIR",
+    "DRIVER_CONFIG",
+    "JDBC_DB_TYPES",
+    "_JAR_NAME_RE",
+    "available_drivers",
+    "build_url",
+    "connect",
+    "delete_driver_file",
+    "jvm_info",
+    "list_databases",
+    "list_driver_files",
+    "read_driver_file",
+    "save_driver_file",
+    "test_connection"
+   ],
+   "doc": "直连通道模块（原 JDBC 连接方式模块） 连接测试 / 拉库列表的统一入口，**原生 Python 驱动直连优先，JDBC 为可选兜底**： 1. 原生直连（core/native_conn.py）：pymysql / psycopg2 / oracledb / dmPython， 纯 Python 或 wheel "
+  },
+  "core/plugin_installer.py": {
+   "loc": 1051,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.db",
+    "core.plugin_catalog",
+    "core.plugin_runtime",
+    "core.remote_dump",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "api/plugins.py",
+    "core/plugin_catalog.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "INSTALL_ROOT",
+    "LOG_DIR",
+    "PLUGIN_DIR",
+    "STATE_DIR",
+    "_STATUS_MAP_TO_DB",
+    "get_state",
+    "install",
+    "list_states",
+    "uninstall"
+   ],
+   "doc": "插件一键安装器（Plugin Installer）—— 服务端化改造版。 设计原则： - Linux 优先：最终部署目标为 Linux 服务器，Windows 仅作开发调试用。 插件清单只提供 Linux 安装策略。 - 离线下载优先（offline_first）：优先通过 URL 下载离线包并解压， 包管理器（apt"
+  },
+  "core/data_compare.py": {
+   "loc": 730,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [
+    "api/data_compare.py",
+    "api/tasks.py",
+    "core/scheduler.py",
+    "core/sync/precheck.py",
+    "core/sync/precheck_data.py"
+   ],
+   "routes": [],
+   "symbols": [],
+   "doc": ""
+  },
+  "core/native_conn.py": {
+   "loc": 313,
+   "layer": "L5 基础设施层",
+   "deps": [],
+   "rdeps": [
+    "api/jdbc.py",
+    "api/tasks.py",
+    "core/jdbc.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DEFAULT_PORTS",
+    "DriverUnavailable",
+    "NATIVE_CONFIG",
+    "NATIVE_DB_TYPES",
+    "connect",
+    "driver_status",
+    "list_databases",
+    "test_connection"
+   ],
+   "doc": "原生 Python 驱动直连层（Native Direct Connect）。 通过纯 Python / wheel 分发的 DB-API 驱动直连数据库，**完全不依赖 Java/JVM**， 用于连接测试、拉取库列表与数据对比/同步等直连数据通道： - mysql / mariadb → pymysql（纯 Pyt"
+  },
+  "core/logical_full.py": {
+   "loc": 603,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config"
+   ],
+   "rdeps": [
+    "core/engines/kingbase.py",
+    "core/engines/mysql.py",
+    "core/engines/postgresql.py",
+    "core/remote_dump.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PG_FAMILY",
+    "SYSTEM_DBS",
+    "TOOLING",
+    "_ENOSPC_MARKS",
+    "_PHYSICAL_SIZE_SQLS",
+    "backup_full_instance",
+    "disk_free",
+    "enumerate_databases",
+    "estimate_instance_bytes",
+    "human_size",
+    "is_enospc",
+    "restore_full_instance"
+   ],
+   "doc": "全实例逻辑备份/恢复 —— 本机实现（PG 系 / MySQL 系通用）。 与 core/remote_dump.py 的远端（SSH）实现语义一致： - 全实例备份 = 枚举库（默认排除系统库）→ 逐库 dump（每库一个文件， 各自一致性快照）+ 全局对象（PG 系 dumpall -g）→ tar.gz + ma"
+  },
+  "core/deploy.py": {
+   "loc": 1142,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.models",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "api/deploy.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DEPLOY_PARAMS",
+    "SCRIPT_DIR",
+    "run_deployment",
+    "run_deployment_async"
+   ],
+   "doc": "数据库部署引擎：参考 00-【知识库】下的各数据库单机安装脚本，通过 SSH 在目标主机上 安装 MySQL / PostgreSQL / Oracle / Kingbase / Redis / Dameng。 通用流程： 1. 通过 SFTP 上传安装包到目标主机 2. 生成参数化的安装脚本并上传 3. 通过 SSH"
+  },
+  "core/restore_extras.py": {
+   "loc": 460,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db"
+   ],
+   "rdeps": [
+    "api/restore_extras_api.py",
+    "core/clone_service.py",
+    "core/rt_backup/pitr.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "capture_mysql_cdc",
+    "capture_pg_cdc",
+    "drop_clone",
+    "mysql_clone_to_test",
+    "mysql_pitr_restore",
+    "mysql_restore_object",
+    "pg_clone_to_test",
+    "pg_pitr_restore",
+    "pg_restore_object",
+    "verify_clone_conn"
+   ],
+   "doc": "高级恢复能力：PITR / 对象级 / 副本克隆。 PITR（Point-in-Time Recovery）： - MySQL：用 mysqlbinlog 解析 binlog，replay 到目标 timestamp - PG：用 WAL + recovery_target_time（需配置 archive_comma"
+  },
+  "core/cross_host.py": {
+   "loc": 533,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/base.py",
+    "core/engines/file.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "cross_host_restore"
+   ],
+   "doc": "跨主机恢复辅助：将备份文件 SFTP 推送到目标主机，SSH 远程执行恢复命令。 支持的恢复类型： - mysql : mysql / mariadb 客户端 - postgresql: psql / pg_restore - oracle : impdp（服务端工具，需要 DIRECTORY） - redis : r"
+  },
+  "core/scheduler.py": {
+   "loc": 1486,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.ai_alert",
+    "core.clone_service",
+    "core.data_compare",
+    "core.db",
+    "core.drill",
+    "core.email_template",
+    "core.engines",
+    "core.engines.base",
+    "core.ferry_inbox",
+    "core.inspection",
+    "core.lifecycle",
+    "core.models",
+    "core.notifier",
+    "core.object_catalog",
+    "core.oplog",
+    "core.policy",
+    "core.remote_dump",
+    "core.restore_extras",
+    "core.restore_verify",
+    "core.retention_gfs",
+    "core.rt_backup",
+    "core.rt_backup.health",
+    "core.rt_backup.repo",
+    "core.ssh_hosts",
+    "core.storage",
+    "core.sync",
+    "core.synthesize",
+    "core.tier_replication",
+    "core.webhooks"
+   ],
+   "rdeps": [
+    "api/inspection.py",
+    "api/restore.py",
+    "api/sync.py",
+    "api/system.py",
+    "api/tasks.py",
+    "core/ai_agent/tools.py",
+    "core/migration.py",
+    "core/vm/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "CHECKSUM_MAX_FILE_MB",
+    "_BANDWIDTH",
+    "_BandwidthGovernor",
+    "_BandwidthGovernor.throttle",
+    "_CONCURRENCY",
+    "_ConcurrencyController",
+    "_ConcurrencyController.acquire",
+    "_ConcurrencyController.release",
+    "_DOW_NAMES",
+    "_PHYS_MARKERS",
+    "_RT_SUPERVISOR_TICK_ID",
+    "reload_scheduler",
+    "run_restore_now",
+    "run_task_now",
+    "scheduler_status",
+    "start_scheduler",
+    "stop_scheduler"
+   ],
+   "doc": "调度与执行核心。 - run_task_now / run_restore_now：单次执行入口（供 API\"立即备份/恢复\"与调度触发共用） - start_scheduler / reload_scheduler / stop_scheduler：基于 APScheduler 的后台调度 文件类型任务(db_typ"
+  },
+  "core/disaster_link.py": {
+   "loc": 382,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.probe"
+   ],
+   "rdeps": [
+    "api/link.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DisasterLinkEngine",
+    "DisasterLinkEngine.fill_log_gap",
+    "DisasterLinkEngine.get_link_status",
+    "DisasterLinkEngine.list_links",
+    "DisasterLinkEngine.run_consistency_check",
+    "DisasterLinkEngine.select_route"
+   ],
+   "doc": "容灾链路 HA 引擎（DisasterLinkEngine）。 提供双运营商专线智能选路、日志间隙自动填补、备端只读一致性校验。 所有外部依赖（真实专线延迟、主备 LSN 比对、备端校验）在 DEMO_MODE 下 以仿真数据兜底，保证平台零外部依赖即可演示完整 HA 能力。 能力一览： - select_route("
+  },
+  "core/reports.py": {
+   "loc": 230,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [
+    "api/inspection.py",
+    "api/records.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_CTRL_RE",
+    "build_csv",
+    "build_docx",
+    "build_pdf",
+    "build_report"
+   ],
+   "doc": "报告生成器：支持 CSV / Word(docx) / PDF 三种格式。 依赖：python-docx（Word）、reportlab（PDF）"
+  },
+  "core/db_migrate.py": {
+   "loc": 493,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.jdbc",
+    "core.models",
+    "core.probe",
+    "core.sync.engine"
+   ],
+   "rdeps": [
+    "api/migration.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DbMigrationEngine",
+    "DbMigrationEngine.create_plan",
+    "DbMigrationEngine.delete_plan",
+    "DbMigrationEngine.get_plan",
+    "DbMigrationEngine.list_plans",
+    "DbMigrationEngine.run_plan",
+    "ST_CHECKING",
+    "ST_COMPLETED",
+    "ST_CREATED",
+    "ST_FAILED",
+    "ST_MIGRATING",
+    "ST_VERIFYING",
+    "_VALID_TYPES"
+   ],
+   "doc": "一站式数据迁移计划引擎（对标阿里云 DTS / AWS DMS 迁移链路）。 阶段编排（对齐业界一站式迁移语义）： 1. precheck 预检查：源/目标连通性、目标库可写（MySQL 自动建库）、源对象统计 2. migrate 结构迁移 + 全量迁移：目标端按源端 schema 重建表结构并迁移存量数据 （复用 "
+  },
+  "core/db.py": {
+   "loc": 1663,
+   "layer": "L0 全局基座",
+   "deps": [
+    "config",
+    "core.logging_setup"
+   ],
+   "rdeps": [
+    "api/ai_alert.py",
+    "api/cdc.py",
+    "api/dedup.py",
+    "api/deploy.py",
+    "api/drills.py",
+    "api/inspection.py",
+    "api/itsm.py",
+    "api/jdbc.py",
+    "api/logs.py",
+    "api/migration.py",
+    "api/records.py",
+    "api/restore.py",
+    "api/restore_extras_api.py",
+    "api/storage.py",
+    "api/system.py",
+    "api/tape.py",
+    "api/tasks.py",
+    "app.py",
+    "config.py",
+    "core/ai_agent/executor.py",
+    "core/ai_agent/session.py",
+    "core/ai_agent/tools.py",
+    "core/ai_alert.py",
+    "core/asset_inventory.py",
+    "core/cdc/__init__.py",
+    "core/cdc/base.py",
+    "core/cdc/mysql_binlog.py",
+    "core/cdc/pg_wal.py",
+    "core/cdc/polling_base.py",
+    "core/cdc/rowlevel.py",
+    "core/cdc/simulated.py",
+    "core/clone_service.py",
+    "core/crypto_pool.py",
+    "core/data_mining.py",
+    "core/db_adapters.py",
+    "core/db_migrate.py",
+    "core/deploy.py",
+    "core/disaster_link.py",
+    "core/drill.py",
+    "core/engines/base.py",
+    "core/engines/dameng.py",
+    "core/engines/file.py",
+    "core/engines/kingbase.py",
+    "core/engines/mongodb.py",
+    "core/engines/mysql.py",
+    "core/engines/neo4j.py",
+    "core/engines/oracle.py",
+    "core/engines/postgresql.py",
+    "core/engines/redis.py",
+    "core/engines/sqlserver.py",
+    "core/ferry_inbox.py",
+    "core/global_dedup.py",
+    "core/hetero_convert.py",
+    "core/inspection.py",
+    "core/itsm.py",
+    "core/lifecycle.py",
+    "core/migration.py",
+    "core/models.py",
+    "core/notifier.py",
+    "core/object_catalog.py",
+    "core/plugin_catalog.py",
+    "core/plugin_installer.py",
+    "core/probe.py",
+    "core/rbac.py",
+    "core/remote_dump.py",
+    "core/restore_extras.py",
+    "core/restore_verify.py",
+    "core/retention_gfs.py",
+    "core/rt/journal.py",
+    "core/rt/log_repo.py",
+    "core/rt_backup/db_rt.py",
+    "core/rt_backup/file_rt.py",
+    "core/rt_backup/health.py",
+    "core/rt_backup/journal.py",
+    "core/rt_backup/pitr.py",
+    "core/rt_backup/repo.py",
+    "core/rt_backup/supervisor.py",
+    "core/rt_backup/watchers/__init__.py",
+    "core/rt_backup/watchers/base.py",
+    "core/scheduler.py",
+    "core/ssh_hosts.py",
+    "core/storage.py",
+    "core/storage_backends/__init__.py",
+    "core/storage_backends/base.py",
+    "core/sync.py",
+    "core/sync/engine.py",
+    "core/synthesize.py",
+    "core/tier_replication.py",
+    "core/vm/__init__.py",
+    "core/vm/engine.py",
+    "core/webhooks.py",
+    "init_db.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "INSTANCE_DIR",
+    "LOG_DIR",
+    "SCHEMA",
+    "_PLUGIN_STATE_FIELDS",
+    "add_log",
+    "decrypt_secret",
+    "delete_plugin_host_state",
+    "encrypt_secret",
+    "execute",
+    "get_conn",
+    "get_logger",
+    "get_plugin_host_state",
+    "get_system_config",
+    "human_size",
+    "init_schema",
+    "list_plugin_host_state",
+    "mask_secret",
+    "now_iso",
+    "query",
+    "query_one",
+    "set_system_config",
+    "sha256_file",
+    "upsert_plugin_host_state"
+   ],
+   "doc": "SQLite 元数据库封装：连接、建表、加密与工具函数。 AIDBM 自身元数据（任务、记录、日志）存放在 SQLite，零外部依赖、开箱即用。 真实数据库备份文件存放在 config.BACKUP_ROOT 下的本地或远程存储中。"
+  },
+  "core/models.py": {
+   "loc": 2874,
+   "layer": "L0 全局基座",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines"
+   ],
+   "rdeps": [
+    "api/ai_alert.py",
+    "api/data_compare.py",
+    "api/datamining.py",
+    "api/db_adapters.py",
+    "api/dedup.py",
+    "api/deploy.py",
+    "api/drills.py",
+    "api/inspection.py",
+    "api/itsm.py",
+    "api/jdbc.py",
+    "api/lifecycle.py",
+    "api/link.py",
+    "api/logs.py",
+    "api/migration.py",
+    "api/policy.py",
+    "api/records.py",
+    "api/restore.py",
+    "api/restore_extras_api.py",
+    "api/restore_verify.py",
+    "api/rt.py",
+    "api/storage.py",
+    "api/sync.py",
+    "api/synthesize.py",
+    "api/system.py",
+    "api/tasks.py",
+    "api/vm.py",
+    "auth.py",
+    "core/ai_agent/session.py",
+    "core/ai_agent/tools.py",
+    "core/ai_alert.py",
+    "core/clone_service.py",
+    "core/data_mining.py",
+    "core/db_migrate.py",
+    "core/deploy.py",
+    "core/disaster_link.py",
+    "core/drill.py",
+    "core/engines/__init__.py",
+    "core/engines/base.py",
+    "core/engines/mysql.py",
+    "core/ferry_inbox.py",
+    "core/hetero_convert.py",
+    "core/inspection.py",
+    "core/itsm.py",
+    "core/lifecycle.py",
+    "core/migration.py",
+    "core/object_catalog.py",
+    "core/plugin_catalog.py",
+    "core/policy.py",
+    "core/restore_verify.py",
+    "core/retention_gfs.py",
+    "core/rt/journal.py",
+    "core/rt/log_repo.py",
+    "core/rt_backup/db_rt.py",
+    "core/rt_backup/file_rt.py",
+    "core/rt_backup/health.py",
+    "core/rt_backup/journal.py",
+    "core/rt_backup/pitr.py",
+    "core/rt_backup/supervisor.py",
+    "core/scheduler.py",
+    "core/storage_backends/base.py",
+    "core/sync.py",
+    "core/sync/engine.py",
+    "core/sync/realtime_runners.py",
+    "core/synthesize.py",
+    "core/vm/__init__.py",
+    "core/vm/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DISASTER_LINK_SOURCE_KINDS",
+    "POLICY_FIELDS",
+    "SYNC_FIELDS",
+    "TASK_FIELDS",
+    "_AI_MESSAGE_FIELDS",
+    "_AI_SESSION_FIELDS",
+    "_ALERT_PREDICTION_FIELDS",
+    "_BACKUP_SET_FIELDS",
+    "_CLONE_FIELDS",
+    "_DATA_COMPARE_ENDPOINT_PREFIX",
+    "_DATA_COMPARE_TASK_FIELDS",
+    "_DISASTER_LINK_FIELDS",
+    "_HETERO_FIELDS",
+    "_ITSM_FIELDS",
+    "_LOG_REPO_FIELDS",
+    "_MIGRATION_FIELDS",
+    "_RESTORE_TEST_REPORT_FIELDS",
+    "_RESTORE_VERIFY_POLICY_FIELDS",
+    "_RJ_FIELDS",
+    "_RJ_UPDATABLE",
+    "_RT_CONFIG_FIELDS",
+    "_RT_STATE_FIELDS",
+    "_RT_TASK_FIELDS",
+    "_VM_HV_FIELDS",
+    "_VM_JOB_FIELDS",
+    "_VM_PROTECTED_FIELDS",
+    "_VM_RP_FIELDS",
+    "add_ai_message",
+    "add_dedup_saved",
+    "bind_policy_to_tasks",
+    "clear_logs",
+    "compute_biz_label",
+    "count_recovery_points",
+    "count_tasks_by_policy",
+    "create_ai_session",
+    "create_alert_prediction",
+    "create_anonymized_export",
+    "create_api_token",
+    "create_backup_set",
+    "create_clone_request",
+    "create_data_compare_report",
+    "create_data_compare_task",
+    "create_deployment",
+    "create_disaster_link",
+    "create_drill",
+    "create_hetero_job",
+    "create_inspection",
+    "create_itsm_ticket",
+    "create_log_repo",
+    "create_migration_plan",
+    "create_protection_policy",
+    "create_record",
+    "create_recovery_point",
+    "create_restore",
+    "create_restore_test_report",
+    "create_restore_verify_policy",
+    "create_rt_task",
+    "create_scan_result",
+    "create_sync_record",
+    "create_sync_task",
+    "create_task",
+    "create_vdb",
+    "create_vm_hypervisor",
+    "create_vm_job",
+    "create_vm_protected",
+    "create_vm_recovery_point",
+    "delete_ai_messages",
+    "delete_ai_session",
+    "delete_alert_prediction",
+    "delete_anonymized_export",
+    "delete_backup_set",
+    "delete_clone_request",
+    "delete_data_compare_task",
+    "delete_deployment",
+    "delete_disaster_link",
+    "delete_drill",
+    "delete_migration_plan",
+    "delete_protection_policy",
+    "delete_recovery_points",
+    "delete_restore_verify_policy",
+    "delete_rt_state",
+    "delete_rt_task",
+    "delete_scan_result",
+    "delete_sync_task",
+    "delete_task",
+    "delete_vdb",
+    "delete_vm_hypervisor",
+    "delete_vm_protected",
+    "delete_vm_recovery_point",
+    "find_backup_set_by_checksum",
+    "get_ai_session",
+    "get_alert_prediction",
+    "get_anonymized_export",
+    "get_backup_set",
+    "get_clone_request",
+    "get_data_compare_report",
+    "get_data_compare_stats",
+    "get_data_compare_task",
+    "get_deployment",
+    "get_disaster_link",
+    "get_drill",
+    "get_hetero_job",
+    "get_itsm_ticket",
+    "get_log_repo",
+    "get_migration_plan",
+    "get_protection_policy",
+    "get_record",
+    "get_recovery_point",
+    "get_restore_test_report",
+    "get_restore_verify_policy",
+    "get_restore_verify_stats",
+    "get_rt_state",
+    "get_rt_task",
+    "get_scan_result",
+    "get_sync_record",
+    "get_sync_task",
+    "get_task",
+    "get_vdb",
+    "get_vm_hypervisor",
+    "get_vm_job",
+    "get_vm_protected",
+    "get_vm_protected_by_task",
+    "get_vm_recovery_point",
+    "last_vm_recovery_point",
+    "latest_scan_map",
+    "list_ai_messages",
+    "list_ai_sessions",
+    "list_alert_predictions",
+    "list_anonymized_exports",
+    "list_api_tokens",
+    "list_backup_sets",
+    "list_clone_requests",
+    "list_data_compare_reports",
+    "list_data_compare_tasks",
+    "list_deployments",
+    "list_disaster_links",
+    "list_drills",
+    "list_hetero_jobs",
+    "list_inspections",
+    "list_itsm_tickets",
+    "list_log_sources",
+    "list_logs",
+    "list_migration_plans",
+    "list_protection_policies",
+    "list_records",
+    "list_recovery_points",
+    "list_restore_test_reports",
+    "list_restore_verify_policies",
+    "list_restores",
+    "list_rt_states",
+    "list_rt_tasks",
+    "list_scan_results",
+    "list_sync_records",
+    "list_sync_tasks",
+    "list_tasks",
+    "list_tasks_by_policy",
+    "list_vdbs",
+    "list_vm_hypervisors",
+    "list_vm_jobs",
+    "list_vm_protected",
+    "list_vm_recovery_points",
+    "mark_record_verified",
+    "next_pit_seq",
+    "normalize_host_ip",
+    "revoke_api_token",
+    "set_data_compare_status",
+    "set_disaster_link_status",
+    "set_restore_verify_status",
+    "set_sync_status",
+    "set_task_status",
+    "unbind_all_tasks_by_policy",
+    "unbind_policy_from_tasks",
+    "update_ai_session",
+    "update_alert_prediction",
+    "update_anonymized_export",
+    "update_backup_set",
+    "update_clone_request",
+    "update_data_compare_report",
+    "update_data_compare_task",
+    "update_deployment",
+    "update_disaster_link",
+    "update_disaster_link_check",
+    "update_drill",
+    "update_hetero_job",
+    "update_itsm_ticket",
+    "update_log_repo",
+    "update_migration_plan",
+    "update_protection_policy",
+    "update_record_cdc",
+    "update_recovery_point",
+    "update_restore_test_report",
+    "update_restore_verify_policy",
+    "update_rt_config",
+    "update_rt_task",
+    "update_sync_task",
+    "update_task",
+    "update_vdb",
+    "update_vm_hypervisor",
+    "update_vm_job",
+    "update_vm_protected",
+    "update_vm_recovery_point",
+    "upsert_rt_state",
+    "verify_api_token"
+   ],
+   "doc": "数据访问层：备份任务、备份记录、恢复记录、系统日志的读写。 对外返回 dict（便于 JSON 序列化）。密码等敏感字段默认不回显， 仅当 include_secret=True（内部引擎/调度使用）才返回明文。"
+  },
+  "core/object_catalog.py": {
+   "loc": 186,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/restore.py",
+    "core/ferry_inbox.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "list_objects",
+    "replace_objects",
+    "scan",
+    "scan_async"
+   ],
+   "doc": "对象目录（Object Catalog，M2 恢复标准化）：备份成功后异步扫描产物内 的对象清单（表/视图等），落库 backup_objects 表，供恢复向导勾选 表级恢复，避免\"恢复完才知道里面有什么\"。 支持的解析： - MySQL .sql/.zst：流式按行解析 CREATE TABLE 标记（mysqld"
+  },
+  "core/webhooks.py": {
+   "loc": 91,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.db"
+   ],
+   "rdeps": [
+    "api/restore.py",
+    "core/ferry_inbox.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "emit",
+    "emit_async",
+    "emit_clone",
+    "emit_restore"
+   ],
+   "doc": "Webhooks 事件中心（M5）：平台关键事件（备份成功/失败、恢复、克隆销毁、 到期销毁等）以 JSON POST 推送到配置的 URL 列表。 - 配置存 system_config：key=webhook_urls（逗号/换行分隔），可选 webhook_secret（HMAC-SHA256 签名，头部 X-B"
+  },
+  "core/synthetic.py": {
+   "loc": 7,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.synthesize"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "【已废弃】合成备份统一使用 core/synthesize.py（调度）+ core/engines/base.synthesize_full_for_task（引擎合成链）。 本文件曾为重复实现，保留 shim 仅作转发兼容，勿在此新增逻辑。"
+  },
+  "core/retention_gfs.py": {
+   "loc": 179,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "KEEP_MIN",
+    "apply_gfs"
+   ],
+   "doc": "GFS 保留策略（M5，Grandfather-Father-Son 祖孙父代保留法）： 按任务维度配置保留模板（extra_options.gfs_policy 或 system_config gfs_default_policy），清理备份记录与产物： daily: 保留最近 N 天的每日最新一份 weekly: "
+  },
+  "core/ferry_inbox.py": {
+   "loc": 169,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.object_catalog",
+    "core.tier_replication",
+    "core.webhooks"
+   ],
+   "rdeps": [
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "inbox_dir",
+    "ingest_all",
+    "ingest_one",
+    "start_bg_worker"
+   ],
+   "doc": "摆渡收件箱（M4，离线环境单向网闸/摆渡盘场景）： 跨网段离线环境无法直连时，源侧平台/脚本把备份产物打成「增量包」： <task_id>_<finished_at>_<sha256>.inc.tar.gz + 同名 .manifest.json 摆渡盘拷入目标侧平台的收件箱目录（默认 /data/ferry_inbo"
+  },
+  "core/restore_extras_clone.py": {
+   "loc": 214,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [
+    "core/clone_service.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "drop_clone_extended",
+    "mysql_snapshot_clone",
+    "oracle_schema_clone",
+    "pg_template_clone"
+   ],
+   "doc": "克隆扩展能力：秒级 COW 模板克隆 / LVM 快照克隆 / Oracle schema 克隆。 - pg_template_clone：PostgreSQL CREATE DATABASE ... TEMPLATE —— 真 COW， 文件引用复制，秒级完成。 - mysql_snapshot_clone：MySQ"
+  },
+  "core/dump_format.py": {
+   "loc": 311,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [
+    "core/engines/kingbase.py",
+    "core/engines/mongodb.py",
+    "core/engines/mysql.py",
+    "core/engines/postgresql.py",
+    "core/remote_dump.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DUMP_FORMATS",
+    "_PG_AUTO",
+    "_PG_FAMILY",
+    "is_native_only",
+    "resolve",
+    "supported_formats"
+   ],
+   "doc": "备份产物导出格式（dump_format）统一定义与解析。 背景 ---- 此前各引擎把\"导出格式\"写死在代码里（PG/金仓固定 -Fc 自定义格式、MySQL 固定 mysqldump 标准 SQL、Oracle 固定 expdp .dmp 等），用户在新建任务时无法选择。 本模块把\"每种数据库支持哪些导出格式、对应"
+  },
+  "core/logging_setup.py": {
+   "loc": 436,
+   "layer": "L0 全局基座",
+   "deps": [
+    "config"
+   ],
+   "rdeps": [
+    "api/logs.py",
+    "api/system.py",
+    "app.py",
+    "core/db.py",
+    "core/engines/file.py",
+    "core/oplog.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "LOG_DIR",
+    "LOG_DIR_SOURCE",
+    "MaskingFormatter",
+    "MaskingFormatter.format",
+    "_ENV_ASSIGN_RE",
+    "_INITIALIZED",
+    "_INIT_LOCK",
+    "_JSON_SECRET_RE",
+    "_LONG_OPT_RE",
+    "_MASK",
+    "_SECRET_ENV_EXACT",
+    "_SECRET_KEYWORDS",
+    "_SHORT_PWD_RE",
+    "_URL_CRED_RE",
+    "get_logger",
+    "init_logging",
+    "json_load_version",
+    "log_locations",
+    "mask_command",
+    "mask_env",
+    "mask_secrets",
+    "resolve_log_dir",
+    "runtime_form"
+   ],
+   "doc": "统一日志基础设施（源码运行 / PyInstaller 可执行文件 / Docker 容器通用）。 设计目标：**任何一次失败都能在事后被定位**，不要求用户能复现。 关键能力 -------- 1. **日志目录可写性兜底** 配置的日志目录不可写时（只读挂载、EXE 放在只读目录、容器未挂载卷、 普通用户无权限），"
+  },
+  "core/oplog.py": {
+   "loc": 438,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "config",
+    "core.logging_setup"
+   ],
+   "rdeps": [
+    "api/logs.py",
+    "core/engines/file.py",
+    "core/remote_dump.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MAX_CAPTURE_BYTES",
+    "OPLOG_RETENTION_DAYS",
+    "OperationLog",
+    "OperationLog.close",
+    "OperationLog.command",
+    "OperationLog.context",
+    "OperationLog.error",
+    "OperationLog.exception",
+    "OperationLog.fail",
+    "OperationLog.info",
+    "OperationLog.name",
+    "OperationLog.output",
+    "OperationLog.read",
+    "OperationLog.section",
+    "OperationLog.status",
+    "OperationLog.step",
+    "OperationLog.warning",
+    "_SAFE_NAME",
+    "attach",
+    "current",
+    "detach",
+    "list_operations",
+    "operation",
+    "operations_root",
+    "purge_old",
+    "read_operation"
+   ],
+   "doc": "任务级操作日志（Operation Log）—— 一次备份/恢复/校验 = 一份完整日志文件。 为什么需要它 ------------ 系统日志（system_logs 表 + platform.log）是全平台混流的，当某次备份失败时， 用户真正需要的是**这一次操作**的完整现场： · 前置检查做了什么、结论是什么"
+  },
+  "core/db_adapters.py": {
+   "loc": 634,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "core.db",
+    "core.engines",
+    "core.engines.base",
+    "core.engines.file",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "api/db_adapters.py",
+    "app.py",
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "BUILTIN_TYPES",
+    "CustomDBEngine",
+    "CustomDBEngine.backup",
+    "CustomDBEngine.check_client",
+    "CustomDBEngine.list_databases",
+    "CustomDBEngine.restore",
+    "CustomDBEngine.verify_record",
+    "RESERVED_PREFIXES",
+    "_BOOL_FIELDS",
+    "_DBTYPE_RE",
+    "_FIELDS",
+    "_PLACEHOLDER_RE",
+    "build_engine_class",
+    "count_tasks_using",
+    "create",
+    "delete",
+    "enabled_types",
+    "engine_meta",
+    "ensure_registered",
+    "get_by_dbtype",
+    "get_by_id",
+    "list_adapters",
+    "register_all",
+    "reload_all",
+    "reload_one",
+    "render_template",
+    "set_enabled",
+    "test_connection",
+    "update",
+    "validate"
+   ],
+   "doc": "可插拔数据库类型（Database Adapter）。 设计目标 -------- 内置引擎（mysql / oracle / postgresql / …）由 ``core.engines`` 静态注册； 本模块承载**用户在界面上新增**的数据库类型——本质是一段 bash 脚本模板 加上若干能力声明。运行时把适配"
+  },
+  "core/rbac.py": {
+   "loc": 301,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [
+    "api/rbac.py",
+    "app.py",
+    "auth.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PERM_KEYS",
+    "VALID_ROLES",
+    "_BOOL",
+    "_FIELDS",
+    "_OPERATOR_KEYS",
+    "_PBKDF2_ALGO",
+    "_PBKDF2_ITER",
+    "_VIEWER_KEYS",
+    "create",
+    "delete",
+    "effective_permissions",
+    "get_by_id",
+    "get_by_username",
+    "has_permission",
+    "hash_password",
+    "list_users",
+    "record_login",
+    "seed_admin_if_empty",
+    "set_password",
+    "update",
+    "verify_builtin",
+    "verify_password"
+   ],
+   "doc": "RBAC：用户、角色、权限点、密码哈希。 设计要点 -------- - 表 ``users``（db.py 迁移块创建）：username/password_hash/role/permissions/... - 角色三档：admin / operator / viewer；权限点 22 个，覆盖所有一级菜单功能 -"
+  },
+  "core/custom_scripts.py": {
+   "loc": 402,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [
+    "api/tasks.py",
+    "core/engines/base.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "SCOPES",
+    "SCOPE_DATABASE",
+    "SCOPE_INSTANCE",
+    "SCOPE_LABELS",
+    "SCOPE_TABLE",
+    "SUPPORTS_TABLE_SCOPE",
+    "_DM_BACKUP",
+    "_DM_RESTORE",
+    "_GENERIC_BACKUP",
+    "_GENERIC_RESTORE",
+    "_HDR",
+    "_MONGO_BACKUP",
+    "_MONGO_RESTORE",
+    "_MYSQL_BACKUP",
+    "_MYSQL_RESTORE",
+    "_ORACLE_BACKUP",
+    "_ORACLE_RESTORE",
+    "_PG_BACKUP",
+    "_PG_RESTORE",
+    "_SCOPE_ALIAS",
+    "_SQLSERVER_BACKUP",
+    "_SQLSERVER_RESTORE",
+    "_TEMPLATES",
+    "backup_script",
+    "normalize_scope",
+    "parse_tables",
+    "restore_script",
+    "template"
+   ],
+   "doc": "自定义备份/恢复脚本模板库（按数据库类型 + 备份范围）。 背景 ---- 平台的「自定义脚本」备份通道（core/engines/base.py 的 run_backup/run_restore） 把用户脚本经 SSH 送到数据库服务器执行，平台注入 ``PLATFORM_*`` 环境变量并 把脚本产物拉回落盘（真实"
+  },
+  "core/remote_dump.py": {
+   "loc": 2895,
+   "layer": "L5 基础设施层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.dump_format",
+    "core.engines.base",
+    "core.engines.file",
+    "core.logical_full",
+    "core.oplog",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "core/clone_service.py",
+    "core/cross_host.py",
+    "core/db_adapters.py",
+    "core/engines/base.py",
+    "core/engines/dameng.py",
+    "core/engines/kingbase.py",
+    "core/engines/mongodb.py",
+    "core/engines/mysql.py",
+    "core/engines/neo4j.py",
+    "core/engines/oracle.py",
+    "core/engines/postgresql.py",
+    "core/engines/redis.py",
+    "core/engines/sqlserver.py",
+    "core/plugin_installer.py",
+    "core/plugin_runtime.py",
+    "core/scheduler.py",
+    "core/vm/ssh.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_PG_BASEBACKUP_FLAGS",
+    "_PG_FAMILY_TOOLING",
+    "_SFTP_READ_CHUNK",
+    "cleanup_remote_artifacts",
+    "current_task_env_export",
+    "fixed_remote_path",
+    "mark_remote_artifact_done",
+    "marker_path",
+    "parse_task_env_vars",
+    "remote_artifact_ready",
+    "remote_db_dump",
+    "remote_db_dump_to_file",
+    "remote_db_restore",
+    "remote_exec_and_fetch",
+    "remote_exec_capture",
+    "remote_has_tool",
+    "remote_list_databases",
+    "remote_physical_backup",
+    "reset_task_env_export",
+    "resolve_remote_tool",
+    "resolve_ssh_host",
+    "set_task_env_export",
+    "sftp_pull_dir_resumable",
+    "sftp_pull_resumable",
+    "sftp_put",
+    "task_env_export",
+    "task_extra_dict",
+    "task_tool_path",
+    "transfer_params"
+   ],
+   "doc": "通过 SSH 在数据库服务器上执行原生 dump/restore —— 实现「无 Agent」的真实备份。 背景与必要性： - 备份平台所在服务器未必安装 mysqldump / pg_dump 等客户端； - 但被备份的数据库服务器自身必然带有这些客户端（要备份的库上面肯定有相关命令）。 因此当本地缺少客户端时，自动"
+  },
+  "core/sensitive_scan.py": {
+   "loc": 585,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [
+    "api/datamining.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "COMPRESSED_EXT",
+    "LEVELS",
+    "PAT_BANKCARD",
+    "PAT_DATE",
+    "PAT_EMAIL",
+    "PAT_IBAN",
+    "PAT_IDCARD",
+    "PAT_IPV4",
+    "PAT_IPV6",
+    "PAT_KV_SECRET",
+    "PAT_MAC_ADDR",
+    "PAT_PASSPORT",
+    "PAT_PHONE",
+    "PAT_PLATE",
+    "PAT_URL_TOKEN",
+    "PAT_USCC",
+    "TEXT_EXT",
+    "_IDCARD_CK",
+    "_IDCARD_W",
+    "_IPV4_PART",
+    "_MAX_CHARS_DEFAULT",
+    "_MAX_SAMPLE_PER_TYPE",
+    "_PHONE_PREFIX",
+    "_SECRET_VALUE_RE",
+    "_SQL_INSERT_RE",
+    "_USCC_CHARSET",
+    "_USCC_W",
+    "checksum_idcard",
+    "checksum_uscc",
+    "classify_columns",
+    "is_cn_mobile",
+    "is_ipv4",
+    "level_meta",
+    "list_sensors",
+    "luhn",
+    "mask_value",
+    "redact",
+    "scan_file",
+    "scan_files",
+    "scan_text",
+    "to_mask_rules"
+   ],
+   "doc": "敏感数据发现与分级分类（Sensitive Data Discovery & Classification）。 对标业界数据资产管理平台的「敏感数据发现(Discovery) + 分级分类(Classification)」能力： 1) **基于内容的识别**（而非只看列名）：正则 + 校验算法双重判定，可识别混在自由文"
+  },
+  "core/asset_inventory.py": {
+   "loc": 547,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db"
+   ],
+   "rdeps": [
+    "api/datamining.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "COLD_LEVELS",
+    "LOCAL_TIER_LABEL",
+    "build_assets",
+    "build_inventory",
+    "governance",
+    "redundancy",
+    "score_all",
+    "score_asset",
+    "trend"
+   ],
+   "doc": "备份数据资产盘点与价值评估（Asset Inventory & Value Scoring）。 业界数据资产管理平台的通用路径是「盘点 → 分级 → 评估 → 治理 → 运营」。 本模块把这条路径落到**备份侧的真实元数据**上（backup_tasks / backup_records / backup_sets /"
+  },
+  "core/ai_agent/__init__.py": {
+   "loc": 2,
+   "layer": "L4 能力执行层",
+   "deps": [],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "AI 智能助手模块：会话管理、工具注册、执行器、Agent 核心。"
+  },
+  "core/ai_agent/agent.py": {
+   "loc": 1386,
+   "layer": "L4 能力执行层",
+   "deps": [],
+   "rdeps": [
+    "api/ai_agent.py"
+   ],
+   "routes": [],
+   "symbols": [],
+   "doc": ""
+  },
+  "core/ai_agent/executor.py": {
+   "loc": 214,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.ai_agent.tools",
+    "core.db"
+   ],
+   "rdeps": [
+    "api/ai_agent.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "ToolExecutor",
+    "ToolExecutor.execute",
+    "_DEFAULT_BASE_URL"
+   ],
+   "doc": "工具执行器：通过内部 HTTP 请求调用业务 API。 ToolExecutor 负责： 1. 调本机 127.0.0.1:8080 的后端 API（透传前端鉴权 header） 2. 危险工具（requires_confirm=True）返回 needs_confirm 标记，不直接执行 3. 错误处理：HTTP 错"
+  },
+  "core/ai_agent/session.py": {
+   "loc": 286,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/ai_agent.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MAX_CONTEXT_MESSAGES",
+    "SessionManager",
+    "SessionManager.add_assistant_message",
+    "SessionManager.add_tool_message",
+    "SessionManager.add_user_message",
+    "SessionManager.build_messages_for_llm",
+    "SessionManager.create",
+    "SessionManager.delete_session",
+    "SessionManager.get_history",
+    "SessionManager.get_session",
+    "SessionManager.list_sessions",
+    "SessionManager.update_session"
+   ],
+   "doc": "会话管理：AI Agent 会话和消息的 CRUD + 上下文构建。 SessionManager 封装 models 层的 CRUD，提供： - 创建/列出/获取/删除会话 - 添加用户消息、助手消息、工具消息 - 加载会话历史构建 LLM 输入上下文"
+  },
+  "core/ai_agent/tools.py": {
+   "loc": 537,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.db",
+    "core.inspection",
+    "core.models",
+    "core.scheduler"
+   ],
+   "rdeps": [
+    "api/ai_agent.py",
+    "core/ai_agent/executor.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "Tool",
+    "ToolRegistry",
+    "ToolRegistry.get",
+    "ToolRegistry.list_all",
+    "ToolRegistry.register",
+    "ToolRegistry.to_openai_tools",
+    "ToolRegistry.tools_description_for_prompt",
+    "create_default_registry"
+   ],
+   "doc": "工具注册表 + 7 个 MVP 工具定义。 每个工具的 executor 现在直接调用本地 Python API（models / scheduler / inspection / db），不再走内部 HTTP 调用，避免 session/cookie 认证问题并 显著降低延迟。"
+  },
+  "core/cdc/__init__.py": {
+   "loc": 273,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.cdc.base",
+    "core.cdc.dameng_logmnr",
+    "core.cdc.kingbase_wal",
+    "core.cdc.mysql_binlog",
+    "core.cdc.oracle_logminer",
+    "core.cdc.pg_wal",
+    "core.cdc.simulated",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/rt_backup/__init__.py",
+    "core/rt_backup/db_rt.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "CDC_REGISTRY",
+    "ENGINE_DAEMON_MAP",
+    "create_daemon",
+    "probe_clients",
+    "supported_engines"
+   ],
+   "doc": "T03/T06 数据库 CDC 守护包：工厂 + 能力探测。 选择策略（MySQL binlog / PostgreSQL WAL / 信创三库 / 仿真兜底）:: DEMO_MODE=on 或 task.demo_only → SimulatedCDCDaemon db_type ∈ {mysql, mariadb}"
+  },
+  "core/cdc/base.py": {
+   "loc": 414,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/cdc/__init__.py",
+    "core/cdc/mysql_binlog.py",
+    "core/cdc/pg_wal.py",
+    "core/cdc/polling_base.py",
+    "core/cdc/simulated.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "CDCDaemon",
+    "CDCDaemon.check_client",
+    "CDCDaemon.current_position",
+    "CDCDaemon.describe",
+    "CDCDaemon.is_alive",
+    "CDCDaemon.is_available",
+    "CDCDaemon.lag_seconds",
+    "CDCDaemon.resume_from",
+    "CDCDaemon.seal_ready_segments",
+    "CDCDaemon.source_position",
+    "CDCDaemon.start",
+    "CDCDaemon.state",
+    "CDCDaemon.stop",
+    "CDCDaemon.tick",
+    "DEFAULT_STALL_SEC"
+   ],
+   "doc": "T03 CDC 守护抽象基类。 一个 CDCDaemon 负责「把某个数据库的事务日志流持续搬到本地日志仓库」： 源库 ──(mysqlbinlog --stop-never / pg_receivewal)──▶ repo.live_dir() │ 段完整 ▼ repo.seal() ──▶ sealed/<day>"
+  },
+  "core/cdc/dameng_logmnr.py": {
+   "loc": 392,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.cdc.polling_base"
+   ],
+   "rdeps": [
+    "core/cdc/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DamengLogMnrDaemon",
+    "DamengLogMnrDaemon.probe_driver",
+    "_MISSING_DRIVER_REASON",
+    "probe_dameng_driver",
+    "reset_driver_cache"
+   ],
+   "doc": "达梦（DM8）DM_LOGMNR 日志捕获守护（T06）。 达梦的日志挖掘包 ``DBMS_LOGMNR`` 在接口形态上高度对齐 Oracle LogMiner， 差异集中在**位点语义**与**系统视图名**两处： ============ ============================== ======"
+  },
+  "core/cdc/kingbase_wal.py": {
+   "loc": 171,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.cdc.pg_wal"
+   ],
+   "rdeps": [
+    "core/cdc/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "KingbaseWALDaemon",
+    "KingbaseWALDaemon.check_client",
+    "KingbaseWALDaemon.describe",
+    "KingbaseWALDaemon.probe_psycopg2",
+    "_KB_DRIVER",
+    "_KB_PROBED",
+    "_KB_REASON",
+    "probe_kingbase_driver",
+    "reset_driver_cache"
+   ],
+   "doc": "KingbaseES（人大金仓）WAL 流式捕获守护。 KingbaseES V8 起内核基于 PostgreSQL，**流复制协议与 WAL 段格式完全兼容**， 因此本实现不重复造轮子，直接继承 :class:`core.cdc.pg_wal.PostgresWALDaemon`， 只通过 T06 钩子化重构（CH"
+  },
+  "core/cdc/oracle_logminer.py": {
+   "loc": 543,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.cdc.polling_base",
+    "core.jdbc"
+   ],
+   "rdeps": [
+    "core/cdc/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "OracleLogMinerDaemon",
+    "OracleLogMinerDaemon.probe_driver",
+    "_JdbcConnectionAdapter",
+    "_JdbcConnectionAdapter.close",
+    "_JdbcConnectionAdapter.commit",
+    "_JdbcConnectionAdapter.cursor",
+    "_JdbcCursorAdapter",
+    "_JdbcCursorAdapter.close",
+    "_JdbcCursorAdapter.execute",
+    "_JdbcCursorAdapter.fetchall",
+    "_JdbcCursorAdapter.fetchone",
+    "_MISSING_DRIVER_REASON",
+    "_NAMED_PARAM_RE",
+    "_THIN_UNSUPPORTED_CODES",
+    "probe_oracle_driver",
+    "reset_driver_cache"
+   ],
+   "doc": "Oracle LogMiner 日志捕获守护（T06）。 实现方式：``DBMS_LOGMNR`` + **SCN 区间拉取** V$DATABASE.CURRENT_SCN ──▶ to_scn │ to_scn > last_scn ? ▼ V$ARCHIVED_LOG / V$LOG ──▶ DBMS_LOGMN"
+  },
+  "core/cdc/pg_wal.py": {
+   "loc": 482,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.cdc.base",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/cdc/__init__.py",
+    "core/cdc/kingbase_wal.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PostgresWALDaemon",
+    "PostgresWALDaemon.check_client",
+    "PostgresWALDaemon.describe",
+    "PostgresWALDaemon.is_available",
+    "PostgresWALDaemon.lag_seconds",
+    "PostgresWALDaemon.probe_psycopg2",
+    "PostgresWALDaemon.seal_ready_segments",
+    "PostgresWALDaemon.source_position",
+    "PostgresWALDaemon.start",
+    "PostgresWALDaemon.stop",
+    "_WAL_NAME_RE",
+    "_WAL_SEGMENT_SIZE"
+   ],
+   "doc": "PostgreSQL WAL 流式捕获守护（并作为 Kingbase 等 PG 协议兼容库的复用基类）。 实现方式：``pg_receivewal``（原 pg_receivexlog）以流复制协议持续接收 WAL 段， 落盘到 ``live/``。WAL 段固定 16MB，接收中的段带 ``.partial`` 后缀"
+  },
+  "core/cdc/polling_base.py": {
+   "loc": 591,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.cdc.base",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/cdc/dameng_logmnr.py",
+    "core/cdc/oracle_logminer.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PollingLogMinerDaemon",
+    "PollingLogMinerDaemon.check_client",
+    "PollingLogMinerDaemon.current_position",
+    "PollingLogMinerDaemon.describe",
+    "PollingLogMinerDaemon.is_alive",
+    "PollingLogMinerDaemon.lag_seconds",
+    "PollingLogMinerDaemon.resume_from",
+    "PollingLogMinerDaemon.source_position",
+    "PollingLogMinerDaemon.start",
+    "PollingLogMinerDaemon.state",
+    "PollingLogMinerDaemon.stop",
+    "PollingLogMinerDaemon.tick",
+    "_DEFAULT_RECONNECT_ROUNDS",
+    "_UNSAFE_NAME_RE"
+   ],
+   "doc": "T06 拉取式（pull）CDC 守护抽象层。 与 T03 的流式守护（``mysqlbinlog --stop-never`` / ``pg_receivewal``）不同， Oracle LogMiner 与达梦 DM_LOGMNR 都是「驱动连接 + 周期查询」的**无子进程**模型： tick() ──▶ 取源"
+  },
+  "core/cdc/simulated.py": {
+   "loc": 230,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.cdc.base",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/cdc/__init__.py",
+    "core/rt_backup/db_rt.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "SimulatedCDCDaemon",
+    "SimulatedCDCDaemon.check_client",
+    "SimulatedCDCDaemon.is_alive",
+    "SimulatedCDCDaemon.is_available",
+    "SimulatedCDCDaemon.lag_seconds",
+    "SimulatedCDCDaemon.source_position",
+    "SimulatedCDCDaemon.start",
+    "SimulatedCDCDaemon.stop",
+    "SimulatedCDCDaemon.tick",
+    "_BINLOG_ROTATE_POS",
+    "_LSN_STEP",
+    "_POS_STEP"
+   ],
+   "doc": "仿真 CDC 守护（Simulated）。 用途： 1. ``DEMO_MODE=on`` 或任务标记 ``demo_only`` 时的默认实现； 2. 真实客户端（mysqlbinlog / pg_receivewal）缺失时的**兜底**实现—— 保证「准 CDP 全链路」在任何环境都能跑通、能演示、能被测试覆盖。"
+  },
+  "core/cdc/mysql_binlog.py": {
+   "loc": 267,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.cdc.base",
+    "core.db"
+   ],
+   "rdeps": [
+    "core/cdc/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MySQLBinlogDaemon",
+    "MySQLBinlogDaemon.is_available",
+    "MySQLBinlogDaemon.lag_seconds",
+    "MySQLBinlogDaemon.probe_replication_lib",
+    "MySQLBinlogDaemon.source_position",
+    "MySQLBinlogDaemon.start",
+    "MySQLBinlogDaemon.tick",
+    "_BINLOG_NAME_RE"
+   ],
+   "doc": "MySQL / MariaDB binlog 流式捕获守护。 实现方式（优先级从高到低）： 1. **mysqlbinlog --read-from-remote-server --raw --stop-never**（首选） 官方客户端伪装成从库持续拉取 binlog，原样落盘到 ``live/``， 段完整性由 b"
+  },
+  "core/cdc/rowlevel.py": {
+   "loc": 1423,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [
+    "api/cdc.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "BaseRowParser",
+    "BaseRowParser.feed",
+    "BaseRowParser.flush",
+    "BaseRowParser.parse",
+    "CDCManager",
+    "CDCManager.get",
+    "CDCManager.running_ids",
+    "CDCManager.start",
+    "CDCManager.status",
+    "CDCManager.stop",
+    "EventStore",
+    "EventStore.count",
+    "EventStore.fetch_range",
+    "EventStore.gen_sql",
+    "EventStore.list_events",
+    "EventStore.save",
+    "META",
+    "MySQLRowParser",
+    "MySQLRowParser.feed",
+    "MySQLRowParser.flush",
+    "PgRowParser",
+    "PgRowParser.drain_pending",
+    "PgRowParser.feed",
+    "PgRowParser.flush",
+    "RowCDCStream",
+    "RowCDCStream.is_alive",
+    "RowCDCStream.start",
+    "RowCDCStream.stop",
+    "STORE",
+    "SqlRedoRowParser",
+    "SqlRedoRowParser.feed",
+    "TableMeta",
+    "TableMeta.get",
+    "TableMeta.invalidate",
+    "_BATCH_SIZE",
+    "_FLUSH_INTERVAL_SEC",
+    "_HEX_PREFIX",
+    "_LOG",
+    "_RE_AT",
+    "_RE_AT_POS",
+    "_RE_DELETE",
+    "_RE_END_POS",
+    "_RE_INSERT",
+    "_RE_PG_BEGIN",
+    "_RE_PG_COL",
+    "_RE_PG_COMMIT",
+    "_RE_PG_TABLE",
+    "_RE_TS",
+    "_RE_UPDATE",
+    "apply_sql_to_target",
+    "load_stream",
+    "probe_cdc_capability",
+    "quote_ident",
+    "quote_literal"
+   ],
+   "doc": "行级 CDC 内核（对标 Debezium / Canal / Flink CDC / GoldenGate）。 与既有 :mod:`core.cdc` 的区别 ------------------------------ 既有 CDC 守护做的是**物理日志段搬运**（把 binlog / WAL 文件整段拉回平台落"
+  },
+  "core/engines/__init__.py": {
+   "loc": 291,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db_adapters",
+    "core.engines.base",
+    "core.engines.dameng",
+    "core.engines.file",
+    "core.engines.kingbase",
+    "core.engines.mariadb",
+    "core.engines.mongodb",
+    "core.engines.mysql",
+    "core.engines.neo4j",
+    "core.engines.oracle",
+    "core.engines.postgresql",
+    "core.engines.redis",
+    "core.engines.sqlserver",
+    "core.models",
+    "core.vm.engine"
+   ],
+   "rdeps": [
+    "api/db_adapters.py",
+    "api/system.py",
+    "api/tasks.py",
+    "core/db_adapters.py",
+    "core/models.py",
+    "core/restore_verify.py",
+    "core/rt_backup/db_rt.py",
+    "core/rt_backup/pitr.py",
+    "core/scheduler.py",
+    "core/synthesize.py",
+    "core/vm/__init__.py",
+    "core/vm/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "AdapterContract",
+    "AdapterContract.backup",
+    "AdapterContract.clone_to_test",
+    "AdapterContract.list_sets",
+    "AdapterContract.restore",
+    "AdapterContract.verify",
+    "ENGINE_DISPLAY",
+    "ENGINE_REGISTRY",
+    "_CORE_SELF",
+    "_ENGINE_META_OVERRIDE",
+    "_PERIPHERAL_API",
+    "engine_meta_map",
+    "get_adapter_tier",
+    "get_engine",
+    "supported_types",
+    "synthesize_full_for_task"
+   ],
+   "doc": "数据库备份引擎注册表：集中注册各类型引擎，供调度器与 API 按 db_type 获取。 适配层契约（AdapterContract） ---------------------------- 所有引擎（无论\"核心库自研\"还是\"外围 API 集成\"）向上统一暴露以下 5 类方法， 屏蔽底层差异，供上层服务门面（Phas"
+  },
+  "core/engines/dameng.py": {
+   "loc": 883,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines.base",
+    "core.engines.file",
+    "core.remote_dump",
+    "core.sync.plugins.dameng"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DamengEngine",
+    "DamengEngine.backup",
+    "DamengEngine.list_databases",
+    "DamengEngine.restore"
+   ],
+   "doc": "DM 达梦（Dameng）逻辑备份/恢复引擎。 本文件实现 DamengEngine，基于达梦官方逻辑导出/导入工具 dexp / dimp 完成 备份（backup）与恢复（restore）。仅依赖 Python 标准库与达梦客户端可执行文件， 不引入任何第三方包。 ================== 达梦 dex"
+  },
+  "core/engines/kingbase.py": {
+   "loc": 634,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.dump_format",
+    "core.engines.base",
+    "core.logical_full",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "KingbaseEngine",
+    "KingbaseEngine.backup",
+    "KingbaseEngine.list_databases",
+    "KingbaseEngine.restore"
+   ],
+   "doc": "Kingbase 人大金仓 备份/恢复引擎。 KingbaseES 由人大金仓开发，兼容 PostgreSQL 协议，自带 sys_dump / sys_restore / ksql 三件套，用法分别与 pg_dump / pg_restore / psql 一致。 本引擎仅依赖 Python 标准库，并复用基类的命令"
+  },
+  "core/engines/mariadb.py": {
+   "loc": 22,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.engines.mysql"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MariaDBEngine"
+   ],
+   "doc": "MariaDB 备份引擎实现。 MariaDB 与 MySQL 在协议和客户端二进制（mysqldump / mysql）层面高度兼容， 但作为独立的 db_type，便于： 1. 在任务列表、仪表盘按数据库类型精确归类（避免混入 MySQL）； 2. 后续若 MariaDB 走 mariadb-dump 工具，可在此"
+  },
+  "core/engines/mongodb.py": {
+   "loc": 320,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.dump_format",
+    "core.engines.base",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MongoEngine",
+    "MongoEngine.backup",
+    "MongoEngine.list_databases",
+    "MongoEngine.restore"
+   ],
+   "doc": "MongoDB 备份引擎实现。 继承 core.engines.base.BackupEngine，基于 mongodump / mongorestore 客户端 完成逻辑备份与恢复。备份以目录方式输出（--out {dir}/{ts}），恢复时直接将 目录还原到目标库（--drop）。 说明： - MongoDB 官"
+  },
+  "core/engines/oracle.py": {
+   "loc": 1486,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines.base",
+    "core.engines.file",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "OracleEngine",
+    "OracleEngine.archivelog_backup",
+    "OracleEngine.backup",
+    "OracleEngine.list_databases",
+    "OracleEngine.restore",
+    "OracleEngine.rman_pitr",
+    "OracleEngine.verify_record"
+   ],
+   "doc": "Oracle 备份/恢复引擎（基于 Oracle 官方客户端）。 Oracle 客户端前置条件（重要）： - 必须在运行环境安装 Oracle 客户端工具，并正确配置环境变量 ORACLE_HOME（指向 Oracle 客户端/数据库软件安装目录），且将 $ORACLE_HOME/bin 加入 PATH，否则无法探测到"
+  },
+  "core/engines/postgresql.py": {
+   "loc": 836,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.dump_format",
+    "core.engines.base",
+    "core.logical_full",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PostgreSQLEngine",
+    "PostgreSQLEngine.backup",
+    "PostgreSQLEngine.list_databases",
+    "PostgreSQLEngine.restore",
+    "PostgreSQLEngine.verify_record"
+   ],
+   "doc": "PostgreSQL 备份引擎。 基于 pg_dump / pg_restore / psql 客户端实现逻辑备份与恢复： - backup(): 使用 pg_dump 导出数据库，-Fc 自定义格式自带压缩；compress==0 时 使用 -Fp 纯文本格式。PostgreSQL 逻辑导出无真正增量能力，incre"
+  },
+  "core/engines/redis.py": {
+   "loc": 244,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines.base",
+    "core.engines.file",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "RedisEngine",
+    "RedisEngine.backup",
+    "RedisEngine.list_databases",
+    "RedisEngine.restore"
+   ],
+   "doc": "Redis 备份/恢复引擎。 Redis 是内存数据库，其持久化以 RDB 快照为主。本引擎通过 redis-cli 的 `--rdb` 选项直接将远程（或本地）Redis 实例的 RDB 快照文件拉取到本地存储目录， 作为“全量/快照”备份。Redis 没有原生的物理增量备份（逻辑增量需 AOF 或主从复制）， 因此"
+  },
+  "core/engines/sqlserver.py": {
+   "loc": 634,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines.base",
+    "core.engines.file",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "SQLServerEngine",
+    "SQLServerEngine.backup",
+    "SQLServerEngine.list_databases",
+    "SQLServerEngine.restore",
+    "SQLServerEngine.verify_record",
+    "_LINUX_DEFAULT_BACKUP_DIR",
+    "_SYSTEM_DBS",
+    "_WIN_DEFAULT_BACKUP_DIR"
+   ],
+   "doc": "SQL Server 备份/恢复引擎（Linux + Windows）。 严格遵循 Microsoft 官方 T-SQL 语法（BACKUP/RESTORE (Transact-SQL)）： - 完整备份：BACKUP DATABASE [db] TO DISK = N'<path>' WITH NAME=..., C"
+  },
+  "core/engines/base.py": {
+   "loc": 1680,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.cross_host",
+    "core.custom_scripts",
+    "core.db",
+    "core.engines.file",
+    "core.models",
+    "core.plugin_catalog",
+    "core.plugin_runtime",
+    "core.remote_dump",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "core/db_adapters.py",
+    "core/engines/__init__.py",
+    "core/engines/dameng.py",
+    "core/engines/file.py",
+    "core/engines/kingbase.py",
+    "core/engines/mongodb.py",
+    "core/engines/mysql.py",
+    "core/engines/neo4j.py",
+    "core/engines/oracle.py",
+    "core/engines/postgresql.py",
+    "core/engines/redis.py",
+    "core/engines/sqlserver.py",
+    "core/remote_dump.py",
+    "core/restore_verify.py",
+    "core/scheduler.py",
+    "core/vm/__init__.py",
+    "core/vm/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "BackupEngine",
+    "BackupEngine.backup",
+    "BackupEngine.backup_mode",
+    "BackupEngine.bandwidth_limit",
+    "BackupEngine.check_client",
+    "BackupEngine.compress_level",
+    "BackupEngine.extra",
+    "BackupEngine.list_databases",
+    "BackupEngine.list_sets",
+    "BackupEngine.pipe_compress",
+    "BackupEngine.pipe_decompress",
+    "BackupEngine.preflight",
+    "BackupEngine.restore",
+    "BackupEngine.run_backup",
+    "BackupEngine.run_restore",
+    "BackupEngine.synthesize_full",
+    "BackupEngine.verify_record",
+    "BackupMode",
+    "BackupResult",
+    "BackupStatus",
+    "BackupType",
+    "shlex_quote"
+   ],
+   "doc": "备份引擎抽象基类与结果对象。 所有具体数据库引擎（MySQL / PostgreSQL / Oracle / Kingbase / DM / Redis / MongoDB）都继承 BackupEngine，实现 backup() 与 restore()。基类统一提供： - 客户端工具探测（check_client） "
+  },
+  "core/engines/file.py": {
+   "loc": 2303,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.cross_host",
+    "core.crypto_pool",
+    "core.db",
+    "core.engines.base",
+    "core.global_dedup",
+    "core.logging_setup",
+    "core.oplog"
+   ],
+   "rdeps": [
+    "core/db_adapters.py",
+    "core/engines/__init__.py",
+    "core/engines/base.py",
+    "core/engines/dameng.py",
+    "core/engines/mysql.py",
+    "core/engines/oracle.py",
+    "core/engines/redis.py",
+    "core/engines/sqlserver.py",
+    "core/plugin_runtime.py",
+    "core/remote_dump.py",
+    "core/rt_backup/watchers/base.py",
+    "core/vm/ssh.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "FileBackupEngine",
+    "FileBackupEngine.backup",
+    "FileBackupEngine.capture_increment",
+    "FileBackupEngine.ensure_base_full",
+    "FileBackupEngine.has_base_snapshot",
+    "FileBackupEngine.list_databases",
+    "FileBackupEngine.list_source_files",
+    "FileBackupEngine.restore",
+    "FileBackupEngine.synthesize_full",
+    "MTIME_TOLERANCE",
+    "SRC_KIND_DIR",
+    "SRC_KIND_FILE",
+    "_KIND_LABEL",
+    "_SSH_CHUNK",
+    "_SSH_PACKET_KB",
+    "_SSH_WINDOW_MB"
+   ],
+   "doc": "文件/目录备份引擎 — 支持本地与远程(SSH, 无Agent)两种源。 特性： - 全量备份：tar.gz 打包源路径下全部文件 - 增量备份：对比源/目标文件列表（size + mtime，容差 5s），仅传输变化/新增文件 - 远程主机：通过 paramiko SSH 执行 find/tar，无需在被备份机器上安"
+  },
+  "core/engines/mysql.py": {
+   "loc": 2444,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.dump_format",
+    "core.engines.base",
+    "core.engines.file",
+    "core.logical_full",
+    "core.models",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py",
+    "core/engines/mariadb.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MySQLEngine",
+    "MySQLEngine.backup",
+    "MySQLEngine.backup_binlog",
+    "MySQLEngine.list_databases",
+    "MySQLEngine.list_sets",
+    "MySQLEngine.pitr_target_time",
+    "MySQLEngine.restore",
+    "MySQLEngine.synthesize_full",
+    "MySQLEngine.verify_record"
+   ],
+   "doc": "MySQL / MariaDB 备份引擎实现。 继承 core.engines.base.BackupEngine，通过调用外部客户端 mysqldump 与 mysql 完成逻辑备份与恢复。 设计要点： - 明文密码绝不进入命令行参数，统一写入临时选项文件 (.cnf, 权限 0600)，命令中以 --default"
+  },
+  "core/engines/neo4j.py": {
+   "loc": 1180,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines.base",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "Neo4jEngine",
+    "Neo4jEngine.backup",
+    "Neo4jEngine.list_databases",
+    "Neo4jEngine.preflight",
+    "Neo4jEngine.restore",
+    "Neo4jEngine.verify_record",
+    "_APOC_METHODS",
+    "_OVERWRITE_FLAGS"
+   ],
+   "doc": "Neo4j 图数据库备份/恢复引擎。 适用版本 -------- Neo4j 5.x（社区版 Community / 企业版 Enterprise），同时兼容 4.4 的命令形态。 备份通道（三种，按 ``extra_options.neo4j_method`` 选择，默认 auto） ----------------"
+  },
+  "core/plugins/__init__.py": {
+   "loc": 8,
+   "layer": "L3 业务编排层",
+   "deps": [],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "插件系统包，参照 dbcheck 的插件架构。 约定： - 每个插件一份 JSON 清单（manifest），描述插件元数据、依赖与一键安装策略。 - 清单存放于 core/plugins/manifests/。 - core.plugin_catalog 负责加载与查询。 - core.plugin_installe"
+  },
+  "core/rt/__init__.py": {
+   "loc": 26,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.rt.journal",
+    "core.rt.log_repo"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "实时备份兼容子包（T01 验收用）。 本包是 core/rt_backup/ 的轻量兼容适配层，对外暴露 T01 验收所需的： - LogRepository 日志仓库目录管理（实为 core.rt_backup.repo.LogRepository 的别名， 额外兼容 init_repo / get_repo / u"
+  },
+  "core/rt/journal.py": {
+   "loc": 150,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.models",
+    "core.rt_backup.journal",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "RecoveryJournal",
+    "RecoveryJournal.delete_by_task",
+    "RecoveryJournal.find_chain",
+    "RecoveryJournal.get_latest",
+    "RecoveryJournal.list_by_task",
+    "RecoveryJournal.list_by_time_range",
+    "RecoveryJournal.record"
+   ],
+   "doc": "PIT 恢复点日志（Recovery Journal）读写。 本类提供 T01 验收标准所需的方法接口： - record(rp) 写入一条恢复点 - list_by_task(...) 按任务查恢复点 - list_by_time_range 按时间范围查恢复点 - get_latest(...) 获取最新恢复点 -"
+  },
+  "core/rt/log_repo.py": {
+   "loc": 242,
+   "layer": "L3 业务编排层",
+   "deps": [
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "core/rt/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "LogRepository",
+    "LogRepository.check_quota",
+    "LogRepository.cleanup_expired",
+    "LogRepository.destroy",
+    "LogRepository.get_repo",
+    "LogRepository.init_repo",
+    "LogRepository.snapshot_dir",
+    "LogRepository.update_size"
+   ],
+   "doc": "日志仓库目录管理（LogRepository）—— 实时备份产物的本地 Tier1 落盘布局与生命周期。 与 core/rt_backup/repo.py 的 LogRepository 共享\"日志仓库\"概念，但本版本： 1. 使用 log_repository DB 表持久化仓库元数据（根路径、子目录、配额、当前体积"
+  },
+  "core/rt_backup/__init__.py": {
+   "loc": 148,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.cdc",
+    "core.rt_backup.health",
+    "core.rt_backup.journal",
+    "core.rt_backup.pitr",
+    "core.rt_backup.repo",
+    "core.rt_backup.supervisor",
+    "core.rt_backup.types",
+    "core.rt_backup.watchers"
+   ],
+   "rdeps": [
+    "api/rt.py",
+    "api/system.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "get_health_monitor",
+    "get_journal",
+    "get_pitr",
+    "get_repo",
+    "get_supervisor",
+    "latest_point",
+    "probe_capabilities",
+    "reconcile",
+    "restart_worker",
+    "start",
+    "status",
+    "status_of",
+    "stop",
+    "trigger_now"
+   ],
+   "doc": "准 CDP 实时备份子包门面。 对外只暴露少量稳定入口，内部模块（supervisor / file_rt / pitr / health） 一律**惰性导入**，保证： 1. 任何一个子模块的可选依赖缺失都不会拖垮 ``import core.rt_backup``； 2. 不与 ``core.scheduler``"
+  },
+  "core/rt_backup/db_rt.py": {
+   "loc": 742,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.cdc",
+    "core.cdc.simulated",
+    "core.db",
+    "core.engines",
+    "core.models",
+    "core.rt_backup.journal",
+    "core.rt_backup.repo",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt_backup/supervisor.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DbRtCapture",
+    "DbRtCapture.config_fingerprint",
+    "DbRtCapture.ensure_base",
+    "DbRtCapture.health",
+    "DbRtCapture.is_alive",
+    "DbRtCapture.prune",
+    "DbRtCapture.start",
+    "DbRtCapture.stop",
+    "DbRtCapture.tick",
+    "DbRtCapture.trigger_now",
+    "_PRUNE_EVERY_TICKS"
+   ],
+   "doc": "T03 数据库 CDC 捕获 worker（DbRtCapture）。 把 :mod:`core.cdc` 的守护进程粘合到「日志段封存 → Recovery Journal」链路： CDCDaemon(mysqlbinlog --stop-never | pg_receivewal | simulated) │ ti"
+  },
+  "core/rt_backup/file_rt.py": {
+   "loc": 569,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.rt_backup.journal",
+    "core.rt_backup.repo",
+    "core.rt_backup.types",
+    "core.rt_backup.watchers"
+   ],
+   "rdeps": [
+    "core/rt_backup/supervisor.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "FileRtCapture",
+    "FileRtCapture.config_fingerprint",
+    "FileRtCapture.engine",
+    "FileRtCapture.ensure_base",
+    "FileRtCapture.file_set_key",
+    "FileRtCapture.health",
+    "FileRtCapture.is_alive",
+    "FileRtCapture.prune",
+    "FileRtCapture.start",
+    "FileRtCapture.stop",
+    "FileRtCapture.tick",
+    "FileRtCapture.trigger_now",
+    "_PRUNE_EVERY_TICKS"
+   ],
+   "doc": "T02 文件近实时捕获引擎（FileRtCapture）。 把 :mod:`core.rt_backup.watchers` 产出的 :class:`ChangeBatch` 粘合到 「增量归档 → 日志仓库 → Recovery Journal」这条落地链路上： FileChangeWatcher(watchdog "
+  },
+  "core/rt_backup/health.py": {
+   "loc": 289,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.rt_backup.supervisor",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt_backup/__init__.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "ALERT_DAEMON_DEGRADED",
+    "ALERT_DAEMON_FAILED",
+    "ALERT_DISK_QUOTA",
+    "ALERT_RPO_BREACH",
+    "RtHealthMonitor",
+    "RtHealthMonitor.check_alerts",
+    "RtHealthMonitor.of",
+    "RtHealthMonitor.reset_suppression",
+    "RtHealthMonitor.snapshot",
+    "RtHealthMonitor.summary",
+    "_ALERT_LEVEL",
+    "check_alerts",
+    "get_monitor",
+    "snapshot",
+    "summary"
+   ],
+   "doc": "实时保护健康监控与告警。 负责把 :class:`core.rt_backup.types.RtHealth` 汇总成看板可用的口径，并在 RPO 超标 / 守护失败 / 磁盘配额逼近时产生告警（带抑制窗口，避免刷屏）。 数据来源优先级： 1. 进程内在管 worker 的实时 ``health()``（最准）； 2."
+  },
+  "core/rt_backup/pitr.py": {
+   "loc": 502,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines",
+    "core.models",
+    "core.restore_extras",
+    "core.rt_backup.journal",
+    "core.rt_backup.repo",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt_backup/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PITRRestore",
+    "PITRRestore.build_plan",
+    "PITRRestore.points",
+    "PITRRestore.preview",
+    "PITRRestore.restore",
+    "PITRRestore.timeline",
+    "PITRRestore.window",
+    "ST_FAILED",
+    "ST_SUCCESS",
+    "_MYSQL_ENGINES",
+    "_PG_ENGINES",
+    "_T06_CDC_ENGINES",
+    "build_plan",
+    "list_points",
+    "restore"
+   ],
+   "doc": "PITR（Point-In-Time Recovery）恢复引擎。 职责边界： 1. **选点** —— 依据 ``recovery_journal`` 把「恢复到任意时间点」翻译成一条精确的恢复链； 2. **校验** —— 判定链完整性（缺口 / 产物缺失 / 校验和不符 / 位点断裂）并给出可读原因； 3. **"
+  },
+  "core/rt_backup/repo.py": {
+   "loc": 448,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt_backup/__init__.py",
+    "core/rt_backup/db_rt.py",
+    "core/rt_backup/file_rt.py",
+    "core/rt_backup/pitr.py",
+    "core/scheduler.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "LogRepository",
+    "LogRepository.atomic_move_in",
+    "LogRepository.atomic_write",
+    "LogRepository.base_dir",
+    "LogRepository.bundle_dir",
+    "LogRepository.destroy",
+    "LogRepository.disk_usage",
+    "LogRepository.inc_dir",
+    "LogRepository.live_dir",
+    "LogRepository.load_state",
+    "LogRepository.make_bundle",
+    "LogRepository.prune",
+    "LogRepository.prune_empty_dirs",
+    "LogRepository.remove_object",
+    "LogRepository.save_state",
+    "LogRepository.seal",
+    "LogRepository.sealed_dir",
+    "LogRepository.state_path",
+    "_MAX_SCAN_ENTRIES",
+    "root_for"
+   ],
+   "doc": "日志仓库（LogRepository）：实时备份产物的本地 Tier1 落盘布局与生命周期。 目录布局（root 由 capture_kind 决定：db-log → config.RT_LOG_ROOT，file → config.RT_FILE_ROOT）： <root>/<task_id>/ live/ # 守护"
+  },
+  "core/rt_backup/supervisor.py": {
+   "loc": 710,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.models",
+    "core.rt_backup.db_rt",
+    "core.rt_backup.file_rt",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt_backup/__init__.py",
+    "core/rt_backup/health.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "RtSupervisor",
+    "RtSupervisor.is_running",
+    "RtSupervisor.reconcile",
+    "RtSupervisor.restart_worker",
+    "RtSupervisor.start",
+    "RtSupervisor.status",
+    "RtSupervisor.status_of",
+    "RtSupervisor.stop",
+    "RtSupervisor.tick",
+    "RtSupervisor.trigger_now",
+    "RtSupervisor.worker_of",
+    "_JOB_ID",
+    "_RtWorker",
+    "_RtWorker.config_fingerprint",
+    "_RtWorker.health",
+    "_RtWorker.is_alive",
+    "_RtWorker.start",
+    "_RtWorker.stop",
+    "_RtWorker.tick",
+    "_RtWorker.trigger_now",
+    "get_supervisor",
+    "reset_supervisor"
+   ],
+   "doc": "T03 实时备份守护总控（RtSupervisor）。 职责： 1. **单实例保证**：进程级 ``os.open(O_CREAT|O_EXCL)`` 文件锁， 多 worker 部署（gunicorn -w N）时只有一个进程真正跑守护，其余静默退出； 2. **worker 生命周期**：按 ``backup_t"
+  },
+  "core/rt_backup/types.py": {
+   "loc": 405,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config"
+   ],
+   "rdeps": [
+    "core/rt/journal.py",
+    "core/rt_backup/__init__.py",
+    "core/rt_backup/db_rt.py",
+    "core/rt_backup/file_rt.py",
+    "core/rt_backup/health.py",
+    "core/rt_backup/journal.py",
+    "core/rt_backup/pitr.py",
+    "core/rt_backup/repo.py",
+    "core/rt_backup/supervisor.py",
+    "core/rt_backup/watchers/__init__.py",
+    "core/rt_backup/watchers/base.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "ChangeBatch",
+    "ChangeBatch.is_empty",
+    "ChangeBatch.to_dict",
+    "DB_LOG_ENGINES",
+    "ENGINE_POSITION_KIND",
+    "FILE_DB_TYPE",
+    "HEALTH_GREEN",
+    "HEALTH_RED",
+    "HEALTH_UNKNOWN",
+    "HEALTH_YELLOW",
+    "KIND_DB_LOG",
+    "KIND_FILE",
+    "POSITION_KINDS",
+    "POSITION_KIND_BINLOG",
+    "POSITION_KIND_DM_LSN",
+    "POSITION_KIND_LABELS",
+    "POSITION_KIND_LSN",
+    "POSITION_KIND_SCN",
+    "RP_BASE_FULL",
+    "RP_DB_FULL",
+    "RP_DB_LOG",
+    "RP_FILE_INC",
+    "RT_MODE_ALIASES",
+    "RT_MODE_DB_CDC",
+    "RT_MODE_FILE_POLLING",
+    "RT_MODE_FILE_WATCH",
+    "RT_MODE_MIXED",
+    "RecoveryPoint",
+    "RecoveryPoint.exists_on_disk",
+    "RecoveryPoint.from_row",
+    "RecoveryPoint.is_full",
+    "RecoveryPoint.position_label",
+    "RecoveryPoint.to_dict",
+    "RestorePlan",
+    "RestorePlan.summary",
+    "RestorePlan.to_dict",
+    "RtConfig",
+    "RtConfig.can_stream",
+    "RtConfig.from_task",
+    "RtConfig.is_file",
+    "RtConfig.to_dict",
+    "RtHealth",
+    "RtHealth.compute_health",
+    "RtHealth.is_breach",
+    "RtHealth.to_dict",
+    "STATUS_DEGRADED",
+    "STATUS_FAILED",
+    "STATUS_RUNNING",
+    "STATUS_STARTING",
+    "STATUS_STOPPED",
+    "STREAMABLE_ENGINES",
+    "norm_path",
+    "normalize_rt_mode"
+   ],
+   "doc": "准 CDP 实时备份的数据类型定义。 全部为纯 dataclass，无外部依赖、无 IO，便于单测与跨模块传递： - RtConfig 任务级实时配置（从 backup_tasks 行解析，缺省回落 config.RT_*） - ChangeBatch 文件变更批次（Watcher → FileRtCapture） -"
+  },
+  "core/rt_backup/journal.py": {
+   "loc": 434,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.db",
+    "core.models",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt/journal.py",
+    "core/rt_backup/__init__.py",
+    "core/rt_backup/db_rt.py",
+    "core/rt_backup/file_rt.py",
+    "core/rt_backup/pitr.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "RecoveryJournal",
+    "RecoveryJournal.append",
+    "RecoveryJournal.count",
+    "RecoveryJournal.get",
+    "RecoveryJournal.latest",
+    "RecoveryJournal.list_points",
+    "RecoveryJournal.mark_uploaded",
+    "RecoveryJournal.mark_verified",
+    "RecoveryJournal.nearest_before",
+    "RecoveryJournal.prune",
+    "RecoveryJournal.resolve_chain",
+    "RecoveryJournal.timeline",
+    "RecoveryJournal.validate_chain"
+   ],
+   "doc": "PIT 恢复点日志（Recovery Journal）读写。 所有写入经 ``core.models`` → ``core.db.execute()``（内含 _write_lock）， 禁止自建 sqlite3 连接。时间统一 ``db.now_iso()``，同秒多点用 pit_seq 区分。"
+  },
+  "core/rt_backup/watchers/__init__.py": {
+   "loc": 187,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.rt_backup.types",
+    "core.rt_backup.watchers.base",
+    "core.rt_backup.watchers.polling",
+    "core.rt_backup.watchers.watchdog_watcher"
+   ],
+   "rdeps": [
+    "core/rt_backup/__init__.py",
+    "core/rt_backup/file_rt.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "WATCHER_REGISTRY",
+    "create_watcher",
+    "estimate_watch_cost",
+    "probe_capabilities"
+   ],
+   "doc": "文件变更捕获器工厂与能力探测。 选择策略（设计文档 §1.3.2）:: rt_mode == 'polling' → PollingWatcher rt_mode == 'watchdog' → WatchdogWatcher（不可用则降级并记原因） source_type == 'remote' → PollingW"
+  },
+  "core/rt_backup/watchers/base.py": {
+   "loc": 277,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines.file",
+    "core.rt_backup.types"
+   ],
+   "rdeps": [
+    "core/rt_backup/watchers/__init__.py",
+    "core/rt_backup/watchers/polling.py",
+    "core/rt_backup/watchers/watchdog_watcher.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "FileChangeWatcher",
+    "FileChangeWatcher.engine",
+    "FileChangeWatcher.is_alive",
+    "FileChangeWatcher.is_available",
+    "FileChangeWatcher.poll_once",
+    "FileChangeWatcher.request_flush",
+    "FileChangeWatcher.source_root",
+    "FileChangeWatcher.start",
+    "FileChangeWatcher.stats",
+    "FileChangeWatcher.stop",
+    "RT_SNAPSHOT_NAMESPACE"
+   ],
+   "doc": "文件变更捕获抽象基类。 跨平台统一接口，上层（FileRtCapture）不感知 inotify / ReadDirectoryChangesW / 轮询之间的差异。 设计契约（设计文档 §3.3）： 1. ``on_batch(ChangeBatch)`` 回调必须在独立线程中调用，不得阻塞事件源； 2. **事件仅"
+  },
+  "core/rt_backup/watchers/polling.py": {
+   "loc": 54,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.rt_backup.watchers.base"
+   ],
+   "rdeps": [
+    "core/rt_backup/watchers/__init__.py",
+    "core/rt_backup/watchers/watchdog_watcher.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PollingWatcher",
+    "PollingWatcher.is_available"
+   ],
+   "doc": "PollingWatcher —— 定时轮询式文件变更捕获（默认兜底实现）。 为什么它是默认： - **全平台覆盖**：Windows / Linux 同一套代码，不依赖任何内核事件机制； - **唯一支持远程源**：远程 SSH 目录没有事件源可订阅，只能靠 ``find`` 列表比对； - **正确性不打折**：真"
+  },
+  "core/rt_backup/watchers/watchdog_watcher.py": {
+   "loc": 287,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.rt_backup.watchers.base",
+    "core.rt_backup.watchers.polling"
+   ],
+   "rdeps": [
+    "core/rt_backup/watchers/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "WatchdogWatcher",
+    "WatchdogWatcher.is_alive",
+    "WatchdogWatcher.is_available",
+    "WatchdogWatcher.stats",
+    "_DIR_COUNT_CAP",
+    "_INOTIFY_SAFE_RATIO"
+   ],
+   "doc": "WatchdogWatcher —— 事件驱动的文件变更捕获（可选加速实现）。 底层由 ``watchdog`` 包适配到各平台原生机制： - Linux : inotify - Windows : ReadDirectoryChangesW - macOS : FSEvents **事件只做触发器**：收到任意事件仅"
+  },
+  "core/storage_backends/__init__.py": {
+   "loc": 91,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.db",
+    "core.storage_backends.base",
+    "core.storage_backends.local",
+    "core.storage_backends.minio",
+    "core.storage_backends.s3",
+    "core.storage_backends.tape"
+   ],
+   "rdeps": [
+    "api/storage.py",
+    "api/tape.py",
+    "core/lifecycle.py",
+    "core/tier_replication.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "TIER_NAMES",
+    "TYPE_META",
+    "check_dependencies",
+    "get_backend",
+    "list_supported_types"
+   ],
+   "doc": "存储后端包：统一注册表与工厂方法。 提供 get_backend(type, config) 工厂函数，根据存储类型返回对应后端实例。"
+  },
+  "core/storage_backends/base.py": {
+   "loc": 143,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "core/storage_backends/__init__.py",
+    "core/storage_backends/local.py",
+    "core/storage_backends/minio.py",
+    "core/storage_backends/s3.py",
+    "core/storage_backends/tape.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "StorageBackend",
+    "StorageBackend.build_object_key",
+    "StorageBackend.delete_file",
+    "StorageBackend.file_exists",
+    "StorageBackend.get_file",
+    "StorageBackend.get_info",
+    "StorageBackend.save_file",
+    "StorageBackend.test_connection"
+   ],
+   "doc": "存储后端基类：定义统一接口，所有存储驱动（Local / MinIO / S3）均实现此接口。 设计参考 Databasus 的 StorageFileSaver 接口，适配本平台 Python + Flask 技术栈。"
+  },
+  "core/storage_backends/local.py": {
+   "loc": 127,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.storage_backends.base"
+   ],
+   "rdeps": [
+    "core/storage_backends/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "LocalStorageBackend",
+    "LocalStorageBackend.delete_file",
+    "LocalStorageBackend.file_exists",
+    "LocalStorageBackend.get_file",
+    "LocalStorageBackend.get_used_space",
+    "LocalStorageBackend.save_file",
+    "LocalStorageBackend.test_connection"
+   ],
+   "doc": "本地文件系统存储后端（Tier 1 — 基础存储层）。 备份文件直接写入服务端本地磁盘，作为第一级存储。 支持原子写入（先写临时文件 + os.replace）和目录自动创建。"
+  },
+  "core/storage_backends/minio.py": {
+   "loc": 235,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.storage_backends.base"
+   ],
+   "rdeps": [
+    "core/ai_alert.py",
+    "core/storage_backends/__init__.py",
+    "core/storage_backends/s3.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MinIOStorageBackend",
+    "MinIOStorageBackend.delete_file",
+    "MinIOStorageBackend.file_exists",
+    "MinIOStorageBackend.get_bucket_usage",
+    "MinIOStorageBackend.get_file",
+    "MinIOStorageBackend.list_objects",
+    "MinIOStorageBackend.save_file",
+    "MinIOStorageBackend.test_connection"
+   ],
+   "doc": "MinIO 存储后端（Tier 2 — 热数据层）。 使用 MinIO 官方 Python SDK（minio），兼容所有 S3 协议服务。 适用于高频访问的热备数据，提供快速读写能力。 支持分块上传（multipart）以处理大文件。"
+  },
+  "core/storage_backends/s3.py": {
+   "loc": 168,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.storage_backends.base",
+    "core.storage_backends.minio"
+   ],
+   "rdeps": [
+    "core/storage_backends/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "S3StorageBackend",
+    "S3StorageBackend.delete_file",
+    "S3StorageBackend.file_exists",
+    "S3StorageBackend.get_file",
+    "S3StorageBackend.save_file",
+    "S3StorageBackend.test_connection"
+   ],
+   "doc": "S3 冷数据存储后端（Tier 3 — 归档层）。 使用 MinIO Python SDK 连接 AWS S3 或任何 S3 兼容的冷存储服务。 适用于长期归档、低频访问的备份数据。 支持 S3 Glacier / Intelligent-Tiering 等存储类配置。"
+  },
+  "core/storage_backends/tape.py": {
+   "loc": 278,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.storage_backends.base"
+   ],
+   "rdeps": [
+    "core/storage_backends/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "TapeStorageBackend",
+    "TapeStorageBackend.delete_file",
+    "TapeStorageBackend.file_exists",
+    "TapeStorageBackend.get_file",
+    "TapeStorageBackend.get_used_space",
+    "TapeStorageBackend.list_files",
+    "TapeStorageBackend.save_file",
+    "TapeStorageBackend.test_connection"
+   ],
+   "doc": "磁带库存储后端（D2T，对标 DBackup 2.11 备份到磁带）。 支持两种模式（由 endpoint 自动识别）： 1. **真实磁带设备**：endpoint=/dev/nst*（Linux 非回流磁带设备，LTO SAS/FC）。 依赖 mt-st 工具包（mt 命令）。写入流程：mt eod 定位到带末尾 "
+  },
+  "core/sync/__init__.py": {
+   "loc": 11,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.engine",
+    "core.sync.plugins"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "数据同步引擎（DataX/LinkUp 风格）。 离线批量同步：Source Reader → 统一 Java 类型 → Sink Writer。 实时同步：预留 Flink CDC 集成入口，本平台负责配置下发与状态监控。"
+  },
+  "core/sync/schema_compare.py": {
+   "loc": 547,
+   "layer": "L4 能力执行层",
+   "deps": [],
+   "rdeps": [
+    "core/sync/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "ColumnInfo",
+    "ColumnInfo.compatible",
+    "ColumnInfo.incompatible",
+    "CrossDBVerifier",
+    "CrossDBVerifier.verify_table",
+    "MigrationVerifier",
+    "MigrationVerifier.verify_table",
+    "SchemaBuilder",
+    "SchemaBuilder.build_mysql",
+    "SchemaBuilder.build_postgresql",
+    "SchemaInfo",
+    "SchemaInfo.get_table",
+    "SchemaValidator",
+    "SchemaValidator.validate_table",
+    "TableInfo",
+    "TableInfo.get_column",
+    "TableInfo.has_column",
+    "ValidationResult",
+    "VerifyResult"
+   ],
+   "doc": "Schema 兼容性比较（参考 pg2mysql validator/verifier 设计）。 提供： - SchemaBuilder：从数据库读取 columns 信息构建 Schema/Table/Column 对象 - SchemaValidator：比对源列和目标列的兼容性（类型、长度），检测不兼容行 - M"
+  },
+  "core/sync/type_mapper.py": {
+   "loc": 143,
+   "layer": "L4 能力执行层",
+   "deps": [],
+   "rdeps": [
+    "core/sync/plugins/dameng.py",
+    "core/sync/plugins/mysql.py",
+    "core/sync/plugins/oracle.py",
+    "core/sync/plugins/postgresql.py",
+    "core/sync/plugins/sqlserver.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "JavaType",
+    "_PYMYSQL_CODE_MAP",
+    "db_type_to_java_type",
+    "java_type_name",
+    "to_db",
+    "to_java"
+   ],
+   "doc": "统一类型映射层：把各数据库原生类型映射为平台中间类型（Java 风格）， 再在写入目标端时映射回目标数据库类型。 中间类型：STRING, LONG, DOUBLE, DECIMAL, BOOLEAN, DATE, TIME, DATETIME, BYTES, NULL"
+  },
+  "core/sync/realtime_runners.py": {
+   "loc": 96,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.models"
+   ],
+   "rdeps": [
+    "api/sync.py",
+    "core/sync/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_LOCK",
+    "clear_runner",
+    "get_stop_event",
+    "is_running",
+    "start_runner",
+    "stop_runner"
+   ],
+   "doc": "实时同步（Binlog CDC）运行器管理。 每个 realtime 同步任务对应一个后台线程 + stop_event。 线程内调用 core.sync.engine.run_sync_task（其 realtime 分支进入 Binlog 监听循环）。"
+  },
+  "core/sync/engine.py": {
+   "loc": 1201,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.db",
+    "core.models",
+    "core.sync.plugins",
+    "core.sync.plugins.base",
+    "core.sync.precheck",
+    "core.sync.realtime_runners",
+    "core.sync.schema_compare"
+   ],
+   "rdeps": [
+    "api/sync.py",
+    "core/db_migrate.py",
+    "core/sync.py",
+    "core/sync/__init__.py",
+    "core/sync/precheck.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "SyncEngine",
+    "SyncEngine.list_source_columns",
+    "SyncEngine.list_source_tables",
+    "SyncEngine.run",
+    "SyncEngine.test_source",
+    "SyncEngine.test_target",
+    "SyncEngine.validate",
+    "SyncEngine.validate_full",
+    "SyncEngine.verify",
+    "_SAVE_MODE_ALIASES",
+    "_SYNC_MODE_ALIASES",
+    "generate_flink_config",
+    "list_sync_columns",
+    "list_sync_tables",
+    "run_sync_task",
+    "run_sync_task_with_task",
+    "test_sync_connection",
+    "validate_sync_task",
+    "verify_sync_task"
+   ],
+   "doc": "数据同步引擎：把 Source Reader → 统一类型 → Sink Writer 串起来。 同时负责： - 把 sync_tasks 行转换为 SyncConfig，处理 managed 源类型 - 约束管理：写入前禁用外键/约束检查，写入后恢复（pg2mysql 核心优化） - 全库迁移模式：一次同步所有表 -"
+  },
+  "core/sync/precheck.py": {
+   "loc": 467,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.data_compare",
+    "core.sync.engine",
+    "core.sync.plugins",
+    "core.sync.precheck_data",
+    "core.sync.type_matrix"
+   ],
+   "rdeps": [
+    "api/sync.py",
+    "core/sync/engine.py",
+    "core/sync/precheck_data.py",
+    "core/sync/type_matrix.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_BINARY",
+    "_CHAR",
+    "_COMPAT",
+    "_DATE",
+    "_NUMERIC",
+    "_SAFE_IDENT",
+    "run_precheck"
+   ],
+   "doc": "迁移/同步前预校验（对标阿里 DTS 预检查、AWS DMS 迁移前评估）。 检查项： 1. 源/目标连通性 2. 源表存在性 / 目标表存在性（overwrite 模式目标表可不存在，将自动重建） 3. 列兼容性（列数、列名匹配、类型兼容矩阵）——核心检查 4. 主键检查（upsert / realtime 需要） "
+  },
+  "core/sync/type_matrix.py": {
+   "loc": 745,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.precheck"
+   ],
+   "rdeps": [
+    "core/sync/plugins/base.py",
+    "core/sync/plugins/oracle.py",
+    "core/sync/precheck.py",
+    "core/sync/precheck_data.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_FAMILY",
+    "_INT_UPGRADE",
+    "_MULTIWORD_BASE",
+    "_SPECIAL_BASES",
+    "_TYPE_RE",
+    "check_column_mapping",
+    "family_of",
+    "map_type",
+    "parse_type"
+   ],
+   "doc": "异构数据库类型映射引擎（对标阿里 DTS《结构初始化涉及的数据类型映射关系》 与 AWS DMS datatype mapping 规则）。 功能： 1. 类型解析：把任意库型的列类型解析为规范结构 （家族 + 基类型 + 精度/刻度 + unsigned 修饰） 2. 映射矩阵：源类型 → 目标库型的建议类型 + 风"
+  },
+  "core/sync/precheck_data.py": {
+   "loc": 448,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.data_compare",
+    "core.sync.precheck",
+    "core.sync.type_matrix"
+   ],
+   "rdeps": [
+    "core/sync/precheck.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "_3BYTE",
+    "_4BYTE",
+    "_GB",
+    "_LATIN",
+    "build_sample_ddl",
+    "check_capacity",
+    "check_charset",
+    "check_data_sample",
+    "check_fk_parents",
+    "probe_charset"
+   ],
+   "doc": "数据级预检增强（对标 DTS 预检查清单的深度项）： 1. check_data_sample 数据级试写：源端采样 N 行 → 目标端按映射建议 DDL 建 临时表试写 → 对账 → 清理。真实暴露类型溢出/截断/字符集/约束问题 （结构检查无法发现的数据级失败在这里拦截）。 2. check_capacity 大表"
+  },
+  "core/sync/plugins/__init__.py": {
+   "loc": 20,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.plugins.base",
+    "core.sync.plugins.dameng",
+    "core.sync.plugins.mysql",
+    "core.sync.plugins.oracle",
+    "core.sync.plugins.postgresql",
+    "core.sync.plugins.sqlserver"
+   ],
+   "rdeps": [
+    "core/sync/__init__.py",
+    "core/sync/engine.py",
+    "core/sync/precheck.py"
+   ],
+   "routes": [],
+   "symbols": [],
+   "doc": "同步插件注册中心。"
+  },
+  "core/sync/plugins/base.py": {
+   "loc": 264,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.type_matrix"
+   ],
+   "rdeps": [
+    "core/sync/engine.py",
+    "core/sync/plugins/__init__.py",
+    "core/sync/plugins/dameng.py",
+    "core/sync/plugins/mysql.py",
+    "core/sync/plugins/oracle.py",
+    "core/sync/plugins/postgresql.py",
+    "core/sync/plugins/sqlserver.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "BasePlugin",
+    "BasePlugin.create_reader",
+    "BasePlugin.create_writer",
+    "BasePlugin.java_to_db",
+    "BasePlugin.normalize_identifier",
+    "BasePlugin.quote_identifier",
+    "BasePlugin.type_to_java",
+    "ColumnMeta",
+    "PluginRegistry",
+    "PluginRegistry.create_reader",
+    "PluginRegistry.create_writer",
+    "PluginRegistry.get",
+    "PluginRegistry.get_plugin",
+    "PluginRegistry.register",
+    "ReadResult",
+    "SinkWriter",
+    "SinkWriter.close",
+    "SinkWriter.connect",
+    "SinkWriter.prepare_table",
+    "SinkWriter.write_batch",
+    "SourceReader",
+    "SourceReader.close",
+    "SourceReader.connect",
+    "SourceReader.list_columns",
+    "SourceReader.list_tables",
+    "SourceReader.read_batch",
+    "SyncConfig",
+    "matrix_suggest"
+   ],
+   "doc": "同步插件基类与注册表。 设计参考 DataX： - SourceReader 负责从数据源按批次读取记录； - SinkWriter 负责将记录写入目标端； - BasePlugin 同时提供 Reader 与 Writer 能力，并统一数据库类型映射。"
+  },
+  "core/sync/plugins/mysql.py": {
+   "loc": 610,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.plugins.base",
+    "core.sync.type_mapper"
+   ],
+   "rdeps": [
+    "core/sync/plugins/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "MySQLPlugin",
+    "MySQLPlugin.create_reader",
+    "MySQLPlugin.create_writer",
+    "MySQLPlugin.disable_constraints",
+    "MySQLPlugin.enable_constraints",
+    "MySQLPlugin.java_to_db",
+    "MySQLPlugin.quote_identifier",
+    "MySQLPlugin.type_to_java",
+    "MySQLSinkWriter",
+    "MySQLSinkWriter.apply_binlog_row",
+    "MySQLSinkWriter.connect",
+    "MySQLSinkWriter.prepare_table",
+    "MySQLSinkWriter.write_batch",
+    "MySQLSourceReader",
+    "MySQLSourceReader.connect",
+    "MySQLSourceReader.list_columns",
+    "MySQLSourceReader.list_tables",
+    "MySQLSourceReader.read_batch"
+   ],
+   "doc": "MySQL / MariaDB 同步插件。"
+  },
+  "core/sync/plugins/postgresql.py": {
+   "loc": 580,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.plugins.base",
+    "core.sync.type_mapper"
+   ],
+   "rdeps": [
+    "core/sync/plugins/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PostgreSQLPlugin",
+    "PostgreSQLPlugin.create_reader",
+    "PostgreSQLPlugin.create_writer",
+    "PostgreSQLPlugin.disable_constraints",
+    "PostgreSQLPlugin.enable_constraints",
+    "PostgreSQLPlugin.java_to_db",
+    "PostgreSQLPlugin.quote_identifier",
+    "PostgreSQLPlugin.type_to_java",
+    "PostgreSQLSinkWriter",
+    "PostgreSQLSinkWriter.apply_binlog_row",
+    "PostgreSQLSinkWriter.connect",
+    "PostgreSQLSinkWriter.prepare_table",
+    "PostgreSQLSinkWriter.write_batch",
+    "PostgreSQLSourceReader",
+    "PostgreSQLSourceReader.connect",
+    "PostgreSQLSourceReader.list_columns",
+    "PostgreSQLSourceReader.list_tables",
+    "PostgreSQLSourceReader.read_batch"
+   ],
+   "doc": "PostgreSQL 同步插件。"
+  },
+  "core/sync/plugins/oracle.py": {
+   "loc": 421,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.plugins.base",
+    "core.sync.type_mapper",
+    "core.sync.type_matrix"
+   ],
+   "rdeps": [
+    "core/sync/plugins/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "OraclePlugin",
+    "OraclePlugin.create_reader",
+    "OraclePlugin.create_writer",
+    "OraclePlugin.java_to_db",
+    "OraclePlugin.quote_identifier",
+    "OraclePlugin.type_to_java",
+    "OracleSinkWriter",
+    "OracleSinkWriter.connect",
+    "OracleSinkWriter.prepare_table",
+    "OracleSinkWriter.write_batch",
+    "OracleSourceReader",
+    "OracleSourceReader.connect",
+    "OracleSourceReader.list_columns",
+    "OracleSourceReader.list_tables",
+    "OracleSourceReader.read_batch"
+   ],
+   "doc": "Oracle 同步插件（oracledb 瘦客户端，纯 Python 离线可用）。 - 源/目标均为 Oracle 时经 oracledb 直连（thin 模式，无需 Instant Client）； - 模式（schema）即 Oracle user，大小写默认按大写处理（Oracle 惯例）； - 增量同步：基于时"
+  },
+  "core/sync/plugins/dameng.py": {
+   "loc": 433,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.plugins.base",
+    "core.sync.type_mapper"
+   ],
+   "rdeps": [
+    "core/engines/dameng.py",
+    "core/sync/plugins/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DamengPlugin",
+    "DamengPlugin.create_reader",
+    "DamengPlugin.create_writer",
+    "DamengPlugin.java_to_db",
+    "DamengPlugin.quote_identifier",
+    "DamengPlugin.type_to_java",
+    "DamengSinkWriter",
+    "DamengSinkWriter.connect",
+    "DamengSinkWriter.prepare_table",
+    "DamengSinkWriter.write_batch",
+    "DamengSourceReader",
+    "DamengSourceReader.connect",
+    "DamengSourceReader.list_columns",
+    "DamengSourceReader.list_tables",
+    "DamengSourceReader.read_batch",
+    "_JVM_STARTED"
+   ],
+   "doc": "达梦 DM8 同步插件（dmPython 驱动）。 离线环境说明：dmPython 不在 PyPI，随达梦安装介质提供 （<DM_HOME>/drivers/python/dmPython，pip install 或拷贝 .egg 到离线包）。 导入失败时给出明确指引，插件注册不受影响（运行时才报错）。"
+  },
+  "core/sync/plugins/sqlserver.py": {
+   "loc": 310,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.sync.plugins.base",
+    "core.sync.type_mapper"
+   ],
+   "rdeps": [
+    "core/sync/plugins/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "SQLServerPlugin",
+    "SQLServerPlugin.create_reader",
+    "SQLServerPlugin.create_writer",
+    "SQLServerPlugin.java_to_db",
+    "SQLServerPlugin.quote_identifier",
+    "SQLServerPlugin.type_to_java",
+    "SQLServerSinkWriter",
+    "SQLServerSinkWriter.connect",
+    "SQLServerSinkWriter.prepare_table",
+    "SQLServerSinkWriter.write_batch",
+    "SQLServerSourceReader",
+    "SQLServerSourceReader.connect",
+    "SQLServerSourceReader.list_columns",
+    "SQLServerSourceReader.list_tables",
+    "SQLServerSourceReader.read_batch"
+   ],
+   "doc": "SQL Server 同步插件（pymssql 驱动，离线包随附 wheel）。"
+  },
+  "core/vm/types.py": {
+   "loc": 182,
+   "layer": "L4 能力执行层",
+   "deps": [],
+   "rdeps": [
+    "api/vm.py",
+    "core/vm/__init__.py",
+    "core/vm/base.py",
+    "core/vm/engine.py",
+    "core/vm/providers/esxi_ssh.py",
+    "core/vm/providers/hyperv_ssh.py",
+    "core/vm/providers/libvirt_ssh.py",
+    "core/vm/providers/pve.py",
+    "core/vm/verify.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "BackupArtifact",
+    "BackupArtifact.to_dict",
+    "CONSISTENCY_APP",
+    "CONSISTENCY_CRASH",
+    "CONSISTENCY_FS",
+    "CONSISTENCY_LABEL",
+    "CONSISTENCY_LEVELS",
+    "CloneResult",
+    "CloneResult.to_dict",
+    "CloneSpec",
+    "CloneSpec.to_dict",
+    "HealthCheckResult",
+    "HealthCheckResult.to_dict",
+    "ProviderCaps",
+    "ProviderCaps.to_dict",
+    "SnapshotRef",
+    "VMDisk",
+    "VMDisk.to_dict",
+    "VMInfo",
+    "VMInfo.to_dict",
+    "VMInfo.total_size_bytes",
+    "VMProviderError",
+    "VerifyResult",
+    "VerifyResult.to_dict"
+   ],
+   "doc": "虚拟机备份子系统的数据类型定义。 设计上刻意与平台既有的「备份集链 / 恢复点 / PIT」模型同构： 一台受保护 VM 的一个恢复点（RecoveryPoint）对应一条 backup_records， 增量关系由 parent_rp_id 串成链，从而可以直接复用平台的存储分层、 生命周期、保留策略与告警。"
+  },
+  "core/vm/base.py": {
+   "loc": 180,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.vm.types",
+    "core.vm.verify"
+   ],
+   "rdeps": [
+    "core/vm/providers/__init__.py",
+    "core/vm/providers/esxi_ssh.py",
+    "core/vm/providers/hyperv_ssh.py",
+    "core/vm/providers/libvirt_ssh.py",
+    "core/vm/providers/pve.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "VMProvider",
+    "VMProvider.backup_full",
+    "VMProvider.backup_incremental",
+    "VMProvider.capabilities",
+    "VMProvider.cleanup_artifact",
+    "VMProvider.clone_to_new_vm",
+    "VMProvider.connect",
+    "VMProvider.create_snapshot",
+    "VMProvider.delete_snapshot",
+    "VMProvider.delete_vm",
+    "VMProvider.download_artifact",
+    "VMProvider.ensure_change_tracking",
+    "VMProvider.extra",
+    "VMProvider.get_vm",
+    "VMProvider.guest_ip",
+    "VMProvider.health_checks",
+    "VMProvider.list_vms",
+    "VMProvider.log",
+    "VMProvider.power_state",
+    "VMProvider.restore_in_place",
+    "VMProvider.start_vm",
+    "VMProvider.stop_vm",
+    "VMProvider.synthesize",
+    "VMProvider.upload_artifact",
+    "VMProvider.version"
+   ],
+   "doc": "VMProvider 抽象基类：屏蔽 PVE / libvirt / ESXi / Hyper-V 的差异。 设计参照业界主流产品的能力分层（Veeam VADP、Rubrik SLA、Cohesity Instant Mass Restore、Zerto Journal），但**只声明平台能真实落地的能力**： Pr"
+  },
+  "core/vm/ssh.py": {
+   "loc": 128,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.engines.file",
+    "core.remote_dump"
+   ],
+   "rdeps": [
+    "core/vm/providers/esxi_ssh.py",
+    "core/vm/providers/hyperv_ssh.py",
+    "core/vm/providers/libvirt_ssh.py",
+    "core/vm/providers/pve.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "connect",
+    "exec_capture",
+    "pull_file",
+    "push_file",
+    "remote_size",
+    "ssh_host_from_hv",
+    "stream_to_file"
+   ],
+   "doc": "VM Provider 共用的 SSH 通道工具（复用平台既有的连接池与断点续传）。 被管侧零安装：控制面执行宿主机自带命令（virsh / qemu-img / vim-cmd / PowerShell）， 数据面走 SSH/SFTP 流式拉取，不在虚拟化平台上留下任何程序。"
+  },
+  "core/vm/http.py": {
+   "loc": 85,
+   "layer": "L4 能力执行层",
+   "deps": [],
+   "rdeps": [
+    "core/vm/providers/pve.py",
+    "core/vm/verify.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "form_encode",
+    "request"
+   ],
+   "doc": "极简 HTTP/HTTPS 客户端（仅用标准库 urllib）。 为什么不用 requests：平台最终交付形态是**完全离线环境**，不能引入新的 PyPI 依赖；PVE / vCenter 的 REST 调用只需要 GET/POST/PUT/DELETE + JSON + 自定义头， urllib 足够，且行为可控"
+  },
+  "core/vm/journal.py": {
+   "loc": 331,
+   "layer": "L4 能力执行层",
+   "deps": [],
+   "rdeps": [
+    "core/vm/__init__.py",
+    "core/vm/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DEFAULT_POLICY",
+    "chain_artifacts",
+    "current_rpo_minutes",
+    "find_rp_by_time",
+    "increment_count_since_full",
+    "last_full_in_chain",
+    "merge_policy",
+    "parse_dt",
+    "plan_expiry",
+    "plan_next",
+    "resolve_chain",
+    "rpo_state"
+   ],
+   "doc": "恢复点链（Journal）管理：增量链解析 + 下一次备份级别决策。 这个模块刻意做成**纯函数式的数据库/时间运算**（不碰网络、不碰 Hypervisor）， 因此可以单测覆盖——这正是备份产品最容易出错、也最该被测试的部分： 「该做全量还是增量」「恢复到某个时间点需要哪些产物」。 业界参照 -------- * "
+  },
+  "core/vm/verify.py": {
+   "loc": 198,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.vm.http",
+    "core.vm.types"
+   ],
+   "rdeps": [
+    "core/vm/base.py",
+    "core/vm/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "DEFAULT_HEARTBEAT_TIMEOUT",
+    "_FALLBACK_PORTS",
+    "default_checks",
+    "run_platform_check",
+    "run_verify",
+    "wait_heartbeat"
+   ],
+   "doc": "自动恢复验证（Auto Recovery Verification）——对应 Veeam SureBackup 的核心理念。 「备份完成」≠「可以恢复」。本模块在**隔离网络**里把恢复点真正拉起一台 VM， 执行真实健康检查（心跳、端口、HTTP、自定义脚本），确认这是一份**可用**的备份， 随后销毁验证 VM。整"
+  },
+  "core/vm/engine.py": {
+   "loc": 459,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.db",
+    "core.engines",
+    "core.engines.base",
+    "core.models",
+    "core.vm.journal",
+    "core.vm.providers",
+    "core.vm.types",
+    "core.vm.verify"
+   ],
+   "rdeps": [
+    "core/engines/__init__.py",
+    "core/vm/__init__.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "VMBackupEngine",
+    "VMBackupEngine.backup",
+    "VMBackupEngine.preflight",
+    "VMBackupEngine.restore",
+    "VMBackupEngine.synthesize_full",
+    "VMBackupEngine.verify_record"
+   ],
+   "doc": "虚拟机备份引擎（db_type=\"vm\"）——把「虚拟机」作为受保护对象接入平台统一体系。 为什么不另起一套调度 -------------------- 平台已有：任务调度（APScheduler）、备份记录、备份集链、存储分层、生命周期、 告警、WebSocket 进度。虚拟机备份只需实现 BackupEngine"
+  },
+  "core/vm/__init__.py": {
+   "loc": 486,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "config",
+    "core.db",
+    "core.engines",
+    "core.engines.base",
+    "core.models",
+    "core.scheduler",
+    "core.vm.engine",
+    "core.vm.journal",
+    "core.vm.providers",
+    "core.vm.types"
+   ],
+   "rdeps": [
+    "api/vm.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "clone_from_rp",
+    "create_hypervisor",
+    "delete_clone_target",
+    "delete_hypervisor",
+    "delete_recovery_point",
+    "discover_vms",
+    "get_job",
+    "get_protected",
+    "list_hypervisors",
+    "list_jobs",
+    "list_protected",
+    "list_providers",
+    "list_recovery_points",
+    "plan_report",
+    "protect",
+    "provider_for",
+    "provider_version",
+    "reap_expired_clones",
+    "restore_in_place",
+    "rpo_report",
+    "test_hypervisor",
+    "trigger_backup",
+    "unprotect",
+    "update_hypervisor",
+    "update_protected",
+    "verify_rp"
+   ],
+   "doc": "虚拟机备份子系统（core.vm）对外门面。 职责边界： * 本模块只做**编排 + 数据组装**（建任务、写恢复点、起作业线程）； * 具体平台动作全部委托给 core/vm/providers/*； * 调度、备份记录、告警等能力**复用平台既有体系**（把虚拟机当成一种受保护对象）， 不另起一套定时器或记录体系。"
+  },
+  "core/vm/providers/pve.py": {
+   "loc": 467,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.vm.base",
+    "core.vm.http",
+    "core.vm.ssh",
+    "core.vm.types"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [
+    "PVEProvider",
+    "PVEProvider.backup_full",
+    "PVEProvider.backup_incremental",
+    "PVEProvider.capabilities",
+    "PVEProvider.cleanup_artifact",
+    "PVEProvider.clone_to_new_vm",
+    "PVEProvider.connect",
+    "PVEProvider.delete_vm",
+    "PVEProvider.download_artifact",
+    "PVEProvider.guest_ip",
+    "PVEProvider.list_vms",
+    "PVEProvider.power_state",
+    "PVEProvider.restore_in_place",
+    "PVEProvider.start_vm",
+    "PVEProvider.stop_vm",
+    "PVEProvider.upload_artifact",
+    "PVEProvider.version",
+    "_ARCHIVE_RE",
+    "_PBS_SNAP_RE"
+   ],
+   "doc": "Proxmox VE（PVE / PBS）虚拟机备份适配器。 控制面：PVE REST API（/api2/json），支持 API Token 与用户名密码两种认证。 数据面：vzdump 在 PVE 节点本地产出归档后，由平台经 SSH/SFTP 拉回。 能力说明（诚实声明，不夸大）： * 全量：所有 PVE 环境"
+  },
+  "core/vm/providers/libvirt_ssh.py": {
+   "loc": 521,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.vm.base",
+    "core.vm.ssh",
+    "core.vm.types"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [
+    "LibvirtSSHProvider",
+    "LibvirtSSHProvider.backup_full",
+    "LibvirtSSHProvider.backup_incremental",
+    "LibvirtSSHProvider.capabilities",
+    "LibvirtSSHProvider.cleanup_artifact",
+    "LibvirtSSHProvider.clone_to_new_vm",
+    "LibvirtSSHProvider.close",
+    "LibvirtSSHProvider.connect",
+    "LibvirtSSHProvider.create_snapshot",
+    "LibvirtSSHProvider.delete_snapshot",
+    "LibvirtSSHProvider.delete_vm",
+    "LibvirtSSHProvider.download_artifact",
+    "LibvirtSSHProvider.guest_ip",
+    "LibvirtSSHProvider.list_vms",
+    "LibvirtSSHProvider.power_state",
+    "LibvirtSSHProvider.restore_in_place",
+    "LibvirtSSHProvider.start_vm",
+    "LibvirtSSHProvider.stop_vm",
+    "LibvirtSSHProvider.synthesize",
+    "LibvirtSSHProvider.upload_artifact",
+    "LibvirtSSHProvider.version"
+   ],
+   "doc": "KVM / libvirt（含 oVirt、OpenStack、KubeVirt 底层）虚拟机备份适配器。 通道：**纯 SSH + 宿主机自带命令**（virsh / qemu-img），不在宿主机安装任何 agent。 全量备份（所有 libvirt 版本可用，业务无停机） --------------------"
+  },
+  "core/vm/providers/esxi_ssh.py": {
+   "loc": 298,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.vm.base",
+    "core.vm.ssh",
+    "core.vm.types"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [
+    "ESXiSSHProvider",
+    "ESXiSSHProvider.backup_full",
+    "ESXiSSHProvider.backup_incremental",
+    "ESXiSSHProvider.capabilities",
+    "ESXiSSHProvider.cleanup_artifact",
+    "ESXiSSHProvider.clone_to_new_vm",
+    "ESXiSSHProvider.connect",
+    "ESXiSSHProvider.create_snapshot",
+    "ESXiSSHProvider.delete_snapshot",
+    "ESXiSSHProvider.delete_vm",
+    "ESXiSSHProvider.download_artifact",
+    "ESXiSSHProvider.guest_ip",
+    "ESXiSSHProvider.list_vms",
+    "ESXiSSHProvider.restore_in_place",
+    "ESXiSSHProvider.start_vm",
+    "ESXiSSHProvider.stop_vm",
+    "ESXiSSHProvider.upload_artifact",
+    "ESXiSSHProvider.version"
+   ],
+   "doc": "VMware ESXi 虚拟机备份适配器（SSH + vim-cmd，零 agent、无需 vCenter 授权）。 为什么不走 VDDK / vStorage API ------------------------------ VDDK 是 C SDK，需要 Broadcom 授权与分发协议，且必须随平台分发二进制"
+  },
+  "core/vm/providers/hyperv_ssh.py": {
+   "loc": 252,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.vm.base",
+    "core.vm.ssh",
+    "core.vm.types"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [
+    "HyperVSSHProvider",
+    "HyperVSSHProvider.backup_full",
+    "HyperVSSHProvider.backup_incremental",
+    "HyperVSSHProvider.capabilities",
+    "HyperVSSHProvider.cleanup_artifact",
+    "HyperVSSHProvider.clone_to_new_vm",
+    "HyperVSSHProvider.connect",
+    "HyperVSSHProvider.create_snapshot",
+    "HyperVSSHProvider.delete_vm",
+    "HyperVSSHProvider.download_artifact",
+    "HyperVSSHProvider.guest_ip",
+    "HyperVSSHProvider.list_vms",
+    "HyperVSSHProvider.restore_in_place",
+    "HyperVSSHProvider.start_vm",
+    "HyperVSSHProvider.stop_vm",
+    "HyperVSSHProvider.upload_artifact",
+    "HyperVSSHProvider.version"
+   ],
+   "doc": "Microsoft Hyper-V 虚拟机备份适配器（SSH + PowerShell，零 agent）。 通道：Windows Server 上启用 OpenSSH Server（或 Win32-OpenSSH），平台经 SSH 执行 PowerShell cmdlet（``Get-VM`` / ``Checkpoi"
+  },
+  "core/vm/providers/__init__.py": {
+   "loc": 32,
+   "layer": "L4 能力执行层",
+   "deps": [
+    "core.vm.base"
+   ],
+   "rdeps": [
+    "core/vm/__init__.py",
+    "core/vm/engine.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PROVIDER_IDS",
+    "PROVIDER_META",
+    "get_provider_class"
+   ],
+   "doc": "VM Provider 注册表（惰性导入，缺依赖不会拖垮模块加载）。"
+  },
+  "api/ai_agent.py": {
+   "loc": 135,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.ai_agent.agent",
+    "core.ai_agent.executor",
+    "core.ai_agent.session",
+    "core.ai_agent.tools",
+    "core.ai_alert"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/agent/sessions/<session_id>",
+    "GET /api/agent/sessions",
+    "GET /api/agent/sessions/<session_id>/messages",
+    "POST /api/agent/chat",
+    "POST /api/agent/confirm",
+    "POST /api/agent/sessions"
+   ],
+   "symbols": [
+    "api_agent_chat",
+    "api_agent_confirm",
+    "api_create_agent_session",
+    "api_delete_agent_session",
+    "api_list_agent_messages",
+    "api_list_agent_sessions"
+   ],
+   "doc": "AI 智能助手 REST API 路由。 路由前缀: /api/agent（通过共享 api_bp 注册） - POST /api/agent/sessions 创建会话 - GET /api/agent/sessions 列出所有会话 - DELETE /api/agent/sessions/<id> 删除会话 - "
+  },
+  "api/ai_alert.py": {
+   "loc": 172,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.ai_alert",
+    "core.db",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/alerts/config",
+    "GET /api/alerts/model/status",
+    "GET /api/alerts/predictions",
+    "GET /api/alerts/stats",
+    "POST /api/alerts/config",
+    "POST /api/alerts/model/test",
+    "POST /api/alerts/run"
+   ],
+   "symbols": [
+    "api_alert_config",
+    "api_alert_model_status",
+    "api_alert_model_test",
+    "api_alert_save_config",
+    "api_alert_stats",
+    "api_list_predictions",
+    "api_run_alerts"
+   ],
+   "doc": "AI 预测告警 API（AIPredictor）。 路由前缀: /api/alerts（通过共享 api_bp 注册） - GET /api/alerts/predictions 预测列表（支持 ?metric= 过滤） - POST /api/alerts/run 手动触发一次全量分析 - GET /api/aler"
+  },
+  "api/clone.py": {
+   "loc": 112,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.clone_service"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/clone",
+    "GET /api/clone/<int:request_id>",
+    "POST /api/clone",
+    "POST /api/clone/<int:request_id>/approve",
+    "POST /api/clone/<int:request_id>/destroy",
+    "POST /api/clone/<int:request_id>/expire",
+    "POST /api/clone/<int:request_id>/reject",
+    "POST /api/clone/<int:request_id>/verify"
+   ],
+   "symbols": [
+    "api_approve_clone",
+    "api_destroy_clone",
+    "api_expire_clone",
+    "api_get_clone",
+    "api_list_clones",
+    "api_reject_clone",
+    "api_request_clone",
+    "api_verify_clone"
+   ],
+   "doc": "克隆服务 API：克隆申请 / 审批 / 驳回 / 销毁 / 到期，以及查询。 路由前缀: /api/clone（通过共享 api_bp 注册） - POST /api/clone 申请克隆 - GET /api/clone 列表 - GET /api/clone/<id> 详情 - POST /api/clone/<"
+  },
+  "api/datamining.py": {
+   "loc": 450,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.asset_inventory",
+    "core.data_mining",
+    "core.models",
+    "core.sensitive_scan"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/datamining/exports/<int:export_id>",
+    "DELETE /api/datamining/scans/<int:scan_id>",
+    "GET /api/datamining/assets",
+    "GET /api/datamining/compliance",
+    "GET /api/datamining/db-schemas",
+    "GET /api/datamining/exports",
+    "GET /api/datamining/exports/<int:export_id>/download",
+    "GET /api/datamining/inventory",
+    "GET /api/datamining/records/<int:source_record_id>/suggest",
+    "GET /api/datamining/rule-templates",
+    "GET /api/datamining/scans",
+    "GET /api/datamining/sensors",
+    "POST /api/datamining/classify",
+    "POST /api/datamining/export",
+    "POST /api/datamining/mask-preview",
+    "POST /api/datamining/preview-rules",
+    "POST /api/datamining/scan"
+   ],
+   "symbols": [
+    "classify_columns",
+    "compliance_overview",
+    "datamining_assets",
+    "datamining_inventory",
+    "delete_export",
+    "delete_scan",
+    "download_export",
+    "export_anonymized",
+    "list_db_schemas",
+    "list_exports",
+    "list_rule_templates",
+    "list_scans",
+    "list_sensors",
+    "mask_value_preview",
+    "preview_mask_rules",
+    "scan_sensitive",
+    "suggest_columns"
+   ],
+   "doc": "数据价值挖掘 API。 能力分层： 1) 资产盘点 /api/datamining/inventory —— 盘点 → 分级 → 价值评估 → 治理建议 2) 敏感发现 /api/datamining/sensors|scan|scans —— 基于内容的敏感数据发现与国标分级 3) 合规概览 /api/datamin"
+  },
+  "api/dedup.py": {
+   "loc": 51,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.global_dedup",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/dedup/stats",
+    "POST /api/dedup/scan"
+   ],
+   "symbols": [
+    "api_dedup_scan",
+    "api_dedup_stats"
+   ],
+   "doc": "全局重删 API（参照鼎甲迪备白皮书 §2.4 全局重删）。 路由前缀: /api/dedup - GET /api/dedup/stats 全局重删统计（重删比 / 累计节省 / 唯一块数） - POST /api/dedup/scan 对一个备份集产物做切片重删（手动触发，用于演示/回收） 说明：全局重删在备份写入"
+  },
+  "api/deploy.py": {
+   "loc": 132,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.deploy",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/deploy/<int:dep_id>",
+    "GET /api/deploy",
+    "GET /api/deploy/<int:dep_id>",
+    "GET /api/deploy/<int:dep_id>/log",
+    "POST /api/deploy",
+    "POST /api/deploy/<int:dep_id>/run",
+    "POST /api/deploy/upload",
+    "PUT /api/deploy/<int:dep_id>"
+   ],
+   "symbols": [
+    "ALLOWED_PKG_EXTS",
+    "create_deployment",
+    "delete_deployment",
+    "get_deploy_log",
+    "get_deployment",
+    "list_deployments",
+    "run_deployment",
+    "update_deployment",
+    "upload_package"
+   ],
+   "doc": "数据库部署 API：增删改查、立即执行、安装包上传。"
+  },
+  "api/drills.py": {
+   "loc": 102,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.drill",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/drills/<int:drill_id>",
+    "GET /api/drills",
+    "GET /api/drills/<int:drill_id>",
+    "GET /api/drills/baseline",
+    "GET /api/drills/schedule",
+    "GET /api/drills/trend",
+    "POST /api/drills",
+    "POST /api/drills/<int:drill_id>/run",
+    "POST /api/drills/schedule",
+    "POST /api/drills/schedule/run"
+   ],
+   "symbols": [
+    "create_drill",
+    "delete_drill",
+    "drills_baseline",
+    "drills_trend",
+    "get_drill",
+    "get_drill_schedule",
+    "list_drills",
+    "run_drill",
+    "run_drill_schedule_now",
+    "save_drill_schedule"
+   ],
+   "doc": "容灾演练 API：排程、执行、评估、趋势、基线。"
+  },
+  "api/hosts.py": {
+   "loc": 61,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/hosts/<int:host_id>",
+    "GET /api/hosts",
+    "GET /api/hosts/<int:host_id>",
+    "POST /api/hosts",
+    "POST /api/hosts/<int:host_id>/test",
+    "PUT /api/hosts/<int:host_id>"
+   ],
+   "symbols": [
+    "create_host",
+    "delete_host",
+    "get_host",
+    "list_hosts",
+    "test_host",
+    "update_host"
+   ],
+   "doc": "SSH 主机纳管 API：增删改查 + 连接测试。"
+  },
+  "api/inspection.py": {
+   "loc": 126,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.inspection",
+    "core.models",
+    "core.reports",
+    "core.scheduler"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/inspection/records",
+    "GET /api/inspection/records/export",
+    "GET /api/inspection/schedule",
+    "POST /api/inspection/run",
+    "POST /api/inspection/schedule"
+   ],
+   "symbols": [
+    "export_inspection_records",
+    "get_inspection_schedule",
+    "list_inspection_records",
+    "run_inspection",
+    "save_inspection_schedule"
+   ],
+   "doc": "备份任务巡检 API：触发巡检、查询巡检记录、导出、调度。"
+  },
+  "api/itsm.py": {
+   "loc": 87,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.clone_service",
+    "core.db",
+    "core.itsm",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/itsm/config",
+    "GET /api/itsm/tickets",
+    "POST /api/itsm/ticket/<int:ticket_id>/approve",
+    "POST /api/itsm/ticket/<int:ticket_id>/reject"
+   ],
+   "symbols": [
+    "api_approve_itsm_ticket",
+    "api_itsm_config",
+    "api_list_itsm_tickets",
+    "api_reject_itsm_ticket"
+   ],
+   "doc": "ITSM 联动 API：工单查询 + 平台内审批（审批结果回写 clone_requests / migration_plans）。 路由前缀: /api/itsm（通过共享 api_bp 注册） - GET /api/itsm/tickets 工单列表（?ref_type=&ref_id=） - POST /api/"
+  },
+  "api/lifecycle.py": {
+   "loc": 44,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.lifecycle",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/lifecycle",
+    "POST /api/lifecycle/config",
+    "POST /api/lifecycle/run"
+   ],
+   "symbols": [
+    "api_lifecycle_run",
+    "api_lifecycle_save_config",
+    "api_lifecycle_status"
+   ],
+   "doc": "冷热分级生命周期 API：状态概览 / 策略配置 / 手动触发。 路由前缀: /api/lifecycle（通过共享 api_bp 注册） - GET /api/lifecycle 状态概览（各级备份集计数 / 容量 / 配置） - POST /api/lifecycle/config 保存生命周期策略（年龄 / 容量"
+  },
+  "api/migration.py": {
+   "loc": 134,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.db_migrate",
+    "core.migration",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/db-migrate/<int:plan_id>",
+    "GET /api/db-migrate",
+    "GET /api/db-migrate/<int:plan_id>",
+    "GET /api/migration",
+    "GET /api/migration/<int:plan_id>",
+    "POST /api/db-migrate",
+    "POST /api/db-migrate/<int:plan_id>/run",
+    "POST /api/migration",
+    "POST /api/migration/<int:plan_id>/verify"
+   ],
+   "symbols": [
+    "_VALID_STAGES",
+    "api_create_db_migrate",
+    "api_create_migration",
+    "api_delete_db_migrate",
+    "api_get_db_migrate",
+    "api_get_migration",
+    "api_list_db_migrate",
+    "api_list_migrations",
+    "api_run_db_migrate",
+    "api_verify_migration"
+   ],
+   "doc": "迁移全流程保护 API：迁移计划的增删查 + 三阶段（pre/mid/post）触发 + 黄金点验证。 路由前缀: /api/migration（通过共享 api_bp 注册）"
+  },
+  "api/plugins.py": {
+   "loc": 277,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.plugin_catalog",
+    "core.plugin_installer",
+    "core.plugin_runtime",
+    "core.ssh_hosts"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/plugins",
+    "GET /api/plugins/<pid>",
+    "GET /api/plugins/<pid>/log",
+    "GET /api/plugins/<pid>/state",
+    "GET /api/plugins/categories",
+    "GET /api/plugins/hosts",
+    "GET /api/plugins/recommend",
+    "POST /api/plugins/<pid>/install",
+    "POST /api/plugins/<pid>/uninstall",
+    "POST /api/plugins/batch-install"
+   ],
+   "symbols": [
+    "batch_install_plugins",
+    "get_plugin",
+    "install_plugin",
+    "list_plugin_categories",
+    "list_plugin_hosts",
+    "list_plugins",
+    "plugin_log",
+    "plugin_state",
+    "recommend_plugins",
+    "uninstall_plugin"
+   ],
+   "doc": "备份依赖插件管理 API：一键安装/卸载/查询外部备份客户端。 支持主机维度：通过 host_id 参数指定目标 SSH 主机，安装/卸载/查询均按 「主机 × 插件」二维维度操作。host_id 为空时兼容旧的平台本机维度。 - GET /api/plugins 列出全部插件 + 运行时状态（?host_id=） -"
+  },
+  "api/policy.py": {
+   "loc": 118,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/policy/<int:policy_id>",
+    "DELETE /api/policy/<int:policy_id>/bind",
+    "GET /api/policy",
+    "GET /api/policy/<int:policy_id>",
+    "POST /api/policy",
+    "POST /api/policy/<int:policy_id>/bind",
+    "PUT /api/policy/<int:policy_id>"
+   ],
+   "symbols": [
+    "api_bind_policy",
+    "api_create_policy",
+    "api_delete_policy",
+    "api_get_policy",
+    "api_list_policies",
+    "api_unbind_policy",
+    "api_update_policy"
+   ],
+   "doc": "保护策略管理 API：CRUD + 任务绑定。 路由前缀: /api/policy（通过共享 api_bp 注册） 提供保护策略的增删改查，以及将策略批量绑定/解绑到备份任务的能力。 敏感字段脱敏风格保持与本平台一致（本模块无密钥，但仍统一返回结构）。"
+  },
+  "api/records.py": {
+   "loc": 348,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.models",
+    "core.reports"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/records",
+    "GET /api/records/<int:record_id>",
+    "GET /api/records/<int:record_id>/download",
+    "GET /api/records/export",
+    "GET /api/records/overrun-stats",
+    "GET /api/settings/backup-quality-thresholds",
+    "POST PUT /api/settings/backup-quality-thresholds"
+   ],
+   "symbols": [
+    "DEFAULT_EXPECTED_SPEED_GB_PER_HOUR",
+    "DEFAULT_FREQ_THRESHOLD",
+    "DEFAULT_FREQ_WINDOW_MIN",
+    "DEFAULT_LONG_DURATION_SEC",
+    "DEFAULT_SPEED_TOLERANCE_PCT",
+    "QUALITY_THRESHOLDS_KEY",
+    "compute_expected_duration_sec",
+    "download_record",
+    "export_records",
+    "get_quality_thresholds",
+    "get_quality_thresholds_api",
+    "get_record",
+    "list_records",
+    "records_overrun_stats",
+    "save_quality_thresholds",
+    "save_quality_thresholds_api"
+   ],
+   "doc": "备份记录与下载 API。"
+  },
+  "api/restore.py": {
+   "loc": 100,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.models",
+    "core.object_catalog",
+    "core.scheduler",
+    "core.webhooks"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/records/<int:record_id>/objects",
+    "GET /api/records/enriched",
+    "GET /api/restores",
+    "GET POST /api/webhooks",
+    "POST /api/restores"
+   ],
+   "symbols": [
+    "api_record_objects",
+    "api_webhooks",
+    "create_restore",
+    "list_records_enriched",
+    "list_restores"
+   ],
+   "doc": "数据恢复 API。"
+  },
+  "api/restore_extras_api.py": {
+   "loc": 170,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.models",
+    "core.restore_extras"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/vdb/<int:vdb_id>",
+    "GET /api/vdb",
+    "POST /api/restores/object",
+    "POST /api/restores/pitr",
+    "POST /api/vdb/clone"
+   ],
+   "symbols": [
+    "clone_vdb",
+    "drop_vdb",
+    "list_vdb",
+    "restore_object",
+    "restore_pitr"
+   ],
+   "doc": "高级恢复 API：PITR / 对象级 / 副本克隆（VDB）。"
+  },
+  "api/restore_verify.py": {
+   "loc": 99,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.models",
+    "core.restore_verify"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/restore-verify-policies/<int:policy_id>",
+    "GET /api/restore-test-reports",
+    "GET /api/restore-verify-policies",
+    "GET /api/restore-verify-policies/<int:policy_id>",
+    "GET /api/restore-verify-policies/<int:policy_id>/reports",
+    "GET /api/restore-verify-stats",
+    "POST /api/restore-test-reports/<int:report_id>/clean",
+    "POST /api/restore-verify-policies",
+    "POST /api/restore-verify-policies/<int:policy_id>/test",
+    "PUT /api/restore-verify-policies/<int:policy_id>"
+   ],
+   "symbols": [
+    "clean_report",
+    "create_policy",
+    "delete_policy",
+    "get_policy",
+    "list_policies",
+    "list_policy_reports",
+    "list_reports",
+    "run_policy_test",
+    "stats",
+    "update_policy"
+   ],
+   "doc": "恢复校验策略与恢复测试报告 API。"
+  },
+  "api/rt.py": {
+   "loc": 461,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.models",
+    "core.rt_backup"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/rt/capabilities",
+    "GET /api/rt/health",
+    "GET /api/rt/points",
+    "GET /api/rt/status",
+    "GET /api/rt/tasks",
+    "GET /api/rt/timeline",
+    "GET /api/rt/window",
+    "POST /api/rt/control",
+    "POST /api/rt/preview",
+    "POST /api/rt/recover",
+    "POST /api/rt/tasks/<int:task_id>/restart",
+    "POST /api/rt/tasks/<int:task_id>/trigger",
+    "PUT /api/rt/tasks/<int:task_id>/config"
+   ],
+   "symbols": [
+    "_DB_CDC_TYPES",
+    "_MAX_POINT_LIMIT",
+    "_RT_CONFIG_TO_TASK_COLUMN",
+    "rt_capabilities",
+    "rt_control",
+    "rt_health",
+    "rt_points",
+    "rt_preview",
+    "rt_recover",
+    "rt_restart",
+    "rt_status",
+    "rt_tasks",
+    "rt_timeline_data",
+    "rt_trigger",
+    "rt_update_config",
+    "rt_window"
+   ],
+   "doc": "准 CDP 实时备份 REST API。 统一挂载在 ``api_bp`` 上，对外路由前缀 ``/api/rt/``（不新建独立蓝图）。 路由一览： ========================================== ====== ================================ 路"
+  },
+  "api/storage.py": {
+   "loc": 537,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "config",
+    "core.db",
+    "core.models",
+    "core.storage_backends",
+    "core.tier_replication"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/storage/targets/<int:target_id>",
+    "GET /api/storage/local-root",
+    "GET /api/storage/replicate/<int:record_id>/status",
+    "GET /api/storage/replication-config",
+    "GET /api/storage/stats",
+    "GET /api/storage/targets",
+    "GET /api/storage/targets/<int:target_id>",
+    "GET /api/storage/targets/enabled",
+    "GET /api/storage/types",
+    "GET /api/storage/usage",
+    "POST /api/storage/replicate/<int:record_id>",
+    "POST /api/storage/replication-config",
+    "POST /api/storage/targets",
+    "POST /api/storage/targets/<int:target_id>/default",
+    "POST /api/storage/targets/<int:target_id>/test",
+    "PUT /api/storage/local-root",
+    "PUT /api/storage/targets/<int:target_id>"
+   ],
+   "symbols": [
+    "_DEFAULT_REPLICATION_CONFIG",
+    "_FORBIDDEN_ROOTS",
+    "_LOCAL_ROOT_KEY",
+    "_MAX_STAT_ENTRIES",
+    "_REPLICATION_CONFIG_KEY",
+    "api_create_target",
+    "api_delete_target",
+    "api_get_local_root",
+    "api_get_replication_config",
+    "api_get_target",
+    "api_list_enabled_targets",
+    "api_list_targets",
+    "api_replicate_status",
+    "api_save_replication_config",
+    "api_set_default",
+    "api_set_local_root",
+    "api_storage_stats",
+    "api_storage_types",
+    "api_storage_usage",
+    "api_test_target",
+    "api_trigger_replicate",
+    "api_update_target"
+   ],
+   "doc": "存储目标管理 API：CRUD + 连接测试 + 三级复制。 路由前缀: /api/storage（通过共享 api_bp 注册） 提供存储目标的增删改查、连接测试、设为默认、手动触发复制等接口。 敏感字段（secret_key）加密存储，返回时自动脱敏。"
+  },
+  "api/synthesize.py": {
+   "loc": 52,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.models",
+    "core.synthesize"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/synthesize",
+    "POST /api/synthesize/run"
+   ],
+   "symbols": [
+    "api_synthesize_run",
+    "api_synthesize_status"
+   ],
+   "doc": "自动合成全量 API：手动触发 / 状态概览。 落实 CDM \"系统内自动合成全量\"：永远增量 → 定期合成全量， 中间增量副本由 lifecycle 按 chain_status='merged' 回收。 路由前缀: /api/synthesize（通过共享 api_bp 注册） - GET /api/synthes"
+  },
+  "api/jdbc.py": {
+   "loc": 193,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.jdbc",
+    "core.models",
+    "core.native_conn"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/jdbc/drivers/<name>",
+    "GET /api/jdbc/drivers",
+    "GET /api/jdbc/drivers/<name>/download",
+    "GET /api/jdbc/status",
+    "POST /api/jdbc/drivers/upload",
+    "POST /api/jdbc/list-databases",
+    "POST /api/jdbc/test-connection"
+   ],
+   "symbols": [
+    "DEFAULT_PORTS",
+    "jdbc_delete_driver",
+    "jdbc_download_driver",
+    "jdbc_list_databases",
+    "jdbc_list_drivers",
+    "jdbc_status",
+    "jdbc_test_connection",
+    "jdbc_upload_driver"
+   ],
+   "doc": "JDBC 连接方式 API：连接测试、拉取库列表、能力状态。 设计：保持「原有连接方式（SSH/本机客户端）优先」，本模块提供显式的 JDBC 通道（测试/拉库），供任务表单、连接诊断与引擎兜底使用。"
+  },
+  "api/data_compare.py": {
+   "loc": 210,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.data_compare",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/data-compare-tasks/<int:task_id>",
+    "GET /api/data-compare-reports",
+    "GET /api/data-compare-reports/<int:report_id>",
+    "GET /api/data-compare-stats",
+    "GET /api/data-compare-tasks",
+    "GET /api/data-compare-tasks/<int:task_id>",
+    "GET /api/data-compare-tasks/<int:task_id>/reports",
+    "POST /api/data-compare-reports/<int:report_id>/repair",
+    "POST /api/data-compare-tasks",
+    "POST /api/data-compare-tasks/<int:task_id>/run",
+    "PUT /api/data-compare-tasks/<int:task_id>"
+   ],
+   "symbols": [
+    "dc_create_task",
+    "dc_delete_task",
+    "dc_get_report",
+    "dc_get_task",
+    "dc_list_reports",
+    "dc_list_task_reports",
+    "dc_list_tasks",
+    "dc_repair",
+    "dc_run_task",
+    "dc_stats",
+    "dc_update_task"
+   ],
+   "doc": "数据对比（恢复数据 vs 生产库）API。"
+  },
+  "api/link.py": {
+   "loc": 354,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.disaster_link",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/disaster-links/<int:link_id>",
+    "GET /api/disaster-links",
+    "GET /api/disaster-links/<int:link_id>",
+    "GET /api/disaster-links/sources",
+    "POST /api/disaster-links",
+    "POST /api/disaster-links/<int:link_id>/check-consistency",
+    "POST /api/disaster-links/<int:link_id>/fill-gap",
+    "POST /api/disaster-links/<int:link_id>/select-route",
+    "PUT /api/disaster-links/<int:link_id>"
+   ],
+   "symbols": [
+    "_SOURCE_KINDS",
+    "api_check_consistency",
+    "api_create_link",
+    "api_delete_link",
+    "api_fill_gap",
+    "api_get_link",
+    "api_list_link_sources",
+    "api_list_links",
+    "api_select_route",
+    "api_update_link"
+   ],
+   "doc": "容灾链路 HA API（DisasterLinkEngine）。 路由前缀: /api/disaster-links（通过共享 api_bp 注册） - GET /api/disaster-links 列表（含数据源回显） - GET /api/disaster-links/sources 可选数据源（同步任务 / 实"
+  },
+  "api/sync.py": {
+   "loc": 350,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.models",
+    "core.scheduler",
+    "core.sync.engine",
+    "core.sync.precheck",
+    "core.sync.realtime_runners"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /sync-tasks/<int:task_id>",
+    "DELETE /sync/tasks/<int:task_id>",
+    "GET /sync-tasks",
+    "GET /sync-tasks/<int:task_id>",
+    "GET /sync-tasks/<int:task_id>/columns",
+    "GET /sync-tasks/<int:task_id>/flink-config",
+    "GET /sync-tasks/<int:task_id>/records",
+    "GET /sync-tasks/<int:task_id>/tables",
+    "GET /sync/records",
+    "GET /sync/tasks",
+    "GET /sync/tasks/<int:task_id>",
+    "POST /sync-tasks",
+    "POST /sync-tasks/<int:task_id>/precheck",
+    "POST /sync-tasks/<int:task_id>/run",
+    "POST /sync-tasks/<int:task_id>/stop",
+    "POST /sync-tasks/<int:task_id>/test/<side>",
+    "POST /sync-tasks/<int:task_id>/validate",
+    "POST /sync-tasks/<int:task_id>/verify",
+    "POST /sync/tasks",
+    "POST /sync/tasks/<int:task_id>/run",
+    "PUT /sync-tasks/<int:task_id>",
+    "PUT /sync/tasks/<int:task_id>"
+   ],
+   "symbols": [
+    "compat_create_task",
+    "compat_delete_task",
+    "compat_get_task",
+    "compat_list_all_records",
+    "compat_list_tasks",
+    "compat_run_task",
+    "compat_update_task",
+    "create_task",
+    "delete_task",
+    "flink_config",
+    "get_columns",
+    "get_tables",
+    "get_task",
+    "list_records",
+    "list_tasks",
+    "precheck_task",
+    "run_task",
+    "stop_task",
+    "test_connection",
+    "update_task",
+    "validate_task",
+    "verify_task"
+   ],
+   "doc": "数据同步 API（DataX/LinkUp 风格：Reader/Writer + 字段映射）。"
+  },
+  "api/tasks.py": {
+   "loc": 387,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.custom_scripts",
+    "core.data_compare",
+    "core.db",
+    "core.engines",
+    "core.jdbc",
+    "core.models",
+    "core.native_conn",
+    "core.scheduler"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/tasks/<int:task_id>",
+    "GET /api/custom-script/template",
+    "GET /api/tasks",
+    "GET /api/tasks/<int:task_id>",
+    "GET /api/tasks/<int:task_id>/list-databases",
+    "GET /api/tasks/<int:task_id>/list-tables",
+    "GET /api/tasks/template",
+    "POST /api/tasks",
+    "POST /api/tasks/<int:task_id>/run",
+    "POST /api/tasks/import",
+    "PUT /api/tasks/<int:task_id>"
+   ],
+   "symbols": [
+    "BIZ_SYSTEM_MAX_LEN",
+    "_LIST_DB_SKIP",
+    "create_task",
+    "custom_script_template",
+    "delete_task",
+    "download_template",
+    "get_task",
+    "import_tasks",
+    "list_task_databases",
+    "list_task_tables",
+    "list_tasks",
+    "run_task",
+    "update_task"
+   ],
+   "doc": "备份任务相关 API：增删改查、立即执行、模板下载、批量导入。"
+  },
+  "api/__init__.py": {
+   "loc": 71,
+   "layer": "L2 接口层",
+   "deps": [
+    "api.ai_agent",
+    "api.ai_alert",
+    "api.cdc",
+    "api.clone",
+    "api.data_compare",
+    "api.datamining",
+    "api.db_adapters",
+    "api.dedup",
+    "api.deploy",
+    "api.drills",
+    "api.hosts",
+    "api.inspection",
+    "api.itsm",
+    "api.jdbc",
+    "api.lifecycle",
+    "api.link",
+    "api.logs",
+    "api.migration",
+    "api.plugins",
+    "api.policy",
+    "api.rbac",
+    "api.records",
+    "api.restore",
+    "api.restore_extras_api",
+    "api.restore_verify",
+    "api.rt",
+    "api.storage",
+    "api.sync",
+    "api.synthesize",
+    "api.system",
+    "api.tape",
+    "api.tasks",
+    "api.vm",
+    "auth",
+    "config"
+   ],
+   "rdeps": [
+    "api/ai_agent.py",
+    "api/ai_alert.py",
+    "api/cdc.py",
+    "api/clone.py",
+    "api/data_compare.py",
+    "api/datamining.py",
+    "api/db_adapters.py",
+    "api/dedup.py",
+    "api/deploy.py",
+    "api/drills.py",
+    "api/hosts.py",
+    "api/inspection.py",
+    "api/itsm.py",
+    "api/jdbc.py",
+    "api/lifecycle.py",
+    "api/link.py",
+    "api/logs.py",
+    "api/migration.py",
+    "api/plugins.py",
+    "api/policy.py",
+    "api/rbac.py",
+    "api/records.py",
+    "api/restore.py",
+    "api/restore_extras_api.py",
+    "api/restore_verify.py",
+    "api/rt.py",
+    "api/storage.py",
+    "api/sync.py",
+    "api/synthesize.py",
+    "api/system.py",
+    "api/tape.py",
+    "api/tasks.py",
+    "api/vm.py",
+    "app.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "PUBLIC_API_PATHS",
+    "safe_download_path"
+   ],
+   "doc": "REST API 蓝图聚合。"
+  },
+  "api/system.py": {
+   "loc": 1074,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "config",
+    "core.ai_alert",
+    "core.crypto_pool",
+    "core.db",
+    "core.email_template",
+    "core.engines",
+    "core.logging_setup",
+    "core.models",
+    "core.rt_backup",
+    "core.scheduler"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/tokens/<int:token_id>",
+    "GET /api/dashboard",
+    "GET /api/logs",
+    "GET /api/meta",
+    "GET /api/notify-config",
+    "GET /api/pool-crypto",
+    "GET /api/scheduler",
+    "GET /api/tokens",
+    "POST /api/logs/clear",
+    "POST /api/notify-config",
+    "POST /api/notify-config/test",
+    "POST /api/pool-crypto",
+    "POST /api/pool-crypto/test",
+    "POST /api/scheduler/reload",
+    "POST /api/tokens"
+   ],
+   "symbols": [
+    "api_create_token",
+    "api_list_tokens",
+    "api_revoke_token",
+    "clear_logs",
+    "dashboard",
+    "get_notify_config",
+    "get_pool_crypto",
+    "logs",
+    "meta",
+    "save_notify_config",
+    "save_pool_crypto",
+    "sched_reload",
+    "sched_status",
+    "test_notify_config",
+    "test_pool_crypto"
+   ],
+   "doc": "系统/仪表盘/调度/日志/元信息 API。"
+  },
+  "api/synthetic.py": {
+   "loc": 6,
+   "layer": "L2 接口层",
+   "deps": [],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "【已废弃】合成备份 API 统一使用 api/synthesize.py（/api/synthesize）。 本文件曾为重复实现，保留 shim 仅作转发兼容，勿在此新增逻辑。"
+  },
+  "api/tape.py": {
+   "loc": 82,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db",
+    "core.storage_backends"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/tape/files",
+    "GET /api/tape/status",
+    "POST /api/tape/<int:target_id>/test",
+    "POST /api/tape/restore"
+   ],
+   "symbols": [
+    "api_tape_files",
+    "api_tape_restore",
+    "api_tape_status",
+    "api_tape_test"
+   ],
+   "doc": "磁带库（D2T）API。 路由前缀: /api/tape - GET /api/tape/status 磁带目标状态（设备 mt status / 模拟带列表） - GET /api/tape/files?target_id= 带内成员清单 - POST /api/tape/restore 从磁带回迁文件到本地目录（供"
+  },
+  "api/logs.py": {
+   "loc": 365,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "config",
+    "core.db",
+    "core.logging_setup",
+    "core.models",
+    "core.oplog"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "GET /api/diagnostics/export",
+    "GET /api/logs/file",
+    "GET /api/logs/files",
+    "GET /api/logs/locations",
+    "GET /api/logs/operations",
+    "GET /api/logs/operations/content",
+    "GET /api/logs/record/<int:record_id>",
+    "POST /api/logs/operations/purge"
+   ],
+   "symbols": [
+    "_MAX_PACK_BYTES",
+    "_MAX_READ_BYTES",
+    "_SAFE",
+    "diagnostics_export",
+    "log_by_record",
+    "log_file_content",
+    "log_files",
+    "log_locations",
+    "log_operation_content",
+    "log_operations",
+    "log_operations_purge"
+   ],
+   "doc": "日志与诊断 API。 排查入口（失败可定位） ---------------------- 1. 系统日志 GET /api/logs —— 已支持 task_id / record_id / q / since 过滤 2. 日志位置 GET /api/logs/locations —— 日志目录从哪来、是否可写、各文"
+  },
+  "api/db_adapters.py": {
+   "loc": 266,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.db_adapters",
+    "core.engines",
+    "core.models"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/db-adapters/<int:aid>",
+    "GET /api/db-adapters",
+    "GET /api/db-adapters/<int:aid>",
+    "GET /api/db-adapters/templates",
+    "POST /api/db-adapters",
+    "POST /api/db-adapters/<int:aid>/test",
+    "POST /api/db-adapters/<int:aid>/toggle",
+    "POST /api/db-adapters/preview",
+    "PUT /api/db-adapters/<int:aid>"
+   ],
+   "symbols": [
+    "_TEMPLATES",
+    "create",
+    "delete",
+    "detail",
+    "list_",
+    "preview",
+    "templates",
+    "test",
+    "toggle",
+    "update"
+   ],
+   "doc": "可插拔数据库类型（Database Adapter）的 CRUD/测试/模板 API。"
+  },
+  "api/rbac.py": {
+   "loc": 132,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.rbac"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/rbac/users/<int:uid>",
+    "GET /api/rbac/me",
+    "GET /api/rbac/permissions",
+    "GET /api/rbac/users",
+    "POST /api/rbac/me/password",
+    "POST /api/rbac/users",
+    "POST /api/rbac/users/<int:uid>/password",
+    "PUT /api/rbac/users/<int:uid>"
+   ],
+   "symbols": [
+    "change_my_password",
+    "create_user",
+    "delete_user",
+    "list_permissions",
+    "list_users",
+    "me",
+    "reset_password",
+    "update_user"
+   ],
+   "doc": "RBAC API：当前用户、用户 CRUD、权限点/角色定义、修改密码。"
+  },
+  "api/cdc.py": {
+   "loc": 180,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.cdc.rowlevel",
+    "core.db"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/cdc/streams/<int:sid>",
+    "GET /api/cdc/capabilities",
+    "GET /api/cdc/streams",
+    "GET /api/cdc/streams/<int:sid>/events",
+    "GET /api/cdc/streams/<int:sid>/status",
+    "POST /api/cdc/probe",
+    "POST /api/cdc/streams",
+    "POST /api/cdc/streams/<int:sid>/replay",
+    "POST /api/cdc/streams/<int:sid>/start",
+    "POST /api/cdc/streams/<int:sid>/stop"
+   ],
+   "symbols": [
+    "api_cdc_capabilities",
+    "api_cdc_create",
+    "api_cdc_delete",
+    "api_cdc_events",
+    "api_cdc_list",
+    "api_cdc_probe",
+    "api_cdc_replay",
+    "api_cdc_start",
+    "api_cdc_status",
+    "api_cdc_stop"
+   ],
+   "doc": "行级 CDC API：捕获流管理 + 事件查询 + CDP 任意时间点回放/回滚。 路由前缀 /api/cdc（通过共享 api_bp 注册）。"
+  },
+  "api/vm.py": {
+   "loc": 299,
+   "layer": "L2 接口层",
+   "deps": [
+    "api",
+    "auth",
+    "core.models",
+    "core.vm",
+    "core.vm.types"
+   ],
+   "rdeps": [
+    "api/__init__.py"
+   ],
+   "routes": [
+    "DELETE /api/vm/hypervisors/<int:hv_id>",
+    "DELETE /api/vm/protected/<int:vm_id>",
+    "DELETE /api/vm/recovery-points/<int:rp_id>",
+    "GET /api/vm/hypervisors",
+    "GET /api/vm/hypervisors/<int:hv_id>/vms",
+    "GET /api/vm/jobs",
+    "GET /api/vm/jobs/<int:job_id>",
+    "GET /api/vm/plan/<int:vm_id>",
+    "GET /api/vm/protected",
+    "GET /api/vm/protected/<int:vm_id>",
+    "GET /api/vm/providers",
+    "GET /api/vm/recovery-points",
+    "GET /api/vm/rpo",
+    "POST /api/vm/hypervisors",
+    "POST /api/vm/hypervisors/test",
+    "POST /api/vm/jobs/<int:job_id>/destroy",
+    "POST /api/vm/jobs/reap",
+    "POST /api/vm/protect",
+    "POST /api/vm/protected/<int:vm_id>/backup",
+    "POST /api/vm/recovery-points/<int:rp_id>/clone",
+    "POST /api/vm/recovery-points/<int:rp_id>/restore",
+    "POST /api/vm/recovery-points/<int:rp_id>/verify",
+    "PUT /api/vm/hypervisors/<int:hv_id>",
+    "PUT /api/vm/protected/<int:vm_id>"
+   ],
+   "symbols": [
+    "api_vm_backup",
+    "api_vm_hypervisor_create",
+    "api_vm_hypervisor_delete",
+    "api_vm_hypervisor_test",
+    "api_vm_hypervisor_update",
+    "api_vm_hypervisor_vms",
+    "api_vm_hypervisors",
+    "api_vm_job",
+    "api_vm_job_destroy",
+    "api_vm_job_reap",
+    "api_vm_jobs",
+    "api_vm_plan",
+    "api_vm_protect",
+    "api_vm_protected",
+    "api_vm_protected_delete",
+    "api_vm_protected_detail",
+    "api_vm_protected_update",
+    "api_vm_providers",
+    "api_vm_recovery_points",
+    "api_vm_rp_clone",
+    "api_vm_rp_delete",
+    "api_vm_rp_restore",
+    "api_vm_rp_verify",
+    "api_vm_rpo"
+   ],
+   "doc": "虚拟机备份 REST API（路由前缀 /api/vm）。 设计原则：**所有能力都如实暴露**——前端据此禁用不支持的按钮，而不是让用户 点了才发现不支持。Provider 抛 VMProviderError 一律转 400 + 可读原因。 路由清单 - GET /api/vm/providers 支持的虚拟化平台类"
+  },
+  "app.py": {
+   "loc": 382,
+   "layer": "L1 入口装配",
+   "deps": [
+    "api",
+    "auth",
+    "config",
+    "core.db",
+    "core.db_adapters",
+    "core.logging_setup",
+    "core.rbac"
+   ],
+   "rdeps": [],
+   "routes": [
+    "GET /",
+    "GET /agent",
+    "GET /alert",
+    "GET /cdc",
+    "GET /clone",
+    "GET /data-compare",
+    "GET /datamining",
+    "GET /db-adapters",
+    "GET /deploy",
+    "GET /dr-link",
+    "GET /drills",
+    "GET /file_backup",
+    "GET /inspection",
+    "GET /logout",
+    "GET /logs",
+    "GET /migration",
+    "GET /operations",
+    "GET /plugins",
+    "GET /protection",
+    "GET /realtime",
+    "GET /records",
+    "GET /restore",
+    "GET /restore-verify",
+    "GET /restore_records",
+    "GET /rt-timeline",
+    "GET /settings",
+    "GET /storage",
+    "GET /sync",
+    "GET /tasks",
+    "GET /users",
+    "GET /vdb",
+    "GET /vm",
+    "GET POST /login"
+   ],
+   "symbols": [
+    "_LOGIN_ATTEMPTS",
+    "create_app"
+   ],
+   "doc": "Flask 应用主程序。 职责： - 初始化元数据数据库（SQLite） - 注册 REST API 蓝图 - 提供页面路由（仪表盘 / 任务 / 记录 / 恢复 / 设置 / 登录）"
+  },
+  "auth.py": {
+   "loc": 90,
+   "layer": "L0 全局基座",
+   "deps": [
+    "core.models",
+    "core.rbac"
+   ],
+   "rdeps": [
+    "api/__init__.py",
+    "api/ai_agent.py",
+    "api/ai_alert.py",
+    "api/cdc.py",
+    "api/clone.py",
+    "api/data_compare.py",
+    "api/datamining.py",
+    "api/db_adapters.py",
+    "api/dedup.py",
+    "api/deploy.py",
+    "api/drills.py",
+    "api/hosts.py",
+    "api/inspection.py",
+    "api/itsm.py",
+    "api/jdbc.py",
+    "api/lifecycle.py",
+    "api/link.py",
+    "api/logs.py",
+    "api/migration.py",
+    "api/plugins.py",
+    "api/policy.py",
+    "api/rbac.py",
+    "api/records.py",
+    "api/restore.py",
+    "api/restore_extras_api.py",
+    "api/restore_verify.py",
+    "api/rt.py",
+    "api/storage.py",
+    "api/sync.py",
+    "api/synthesize.py",
+    "api/system.py",
+    "api/tape.py",
+    "api/tasks.py",
+    "api/vm.py",
+    "app.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "login_required",
+    "permission_required"
+   ],
+   "doc": "登录鉴权：页面走 Flask session；外部系统走 Bearer API Token（api_tokens 表）。 session[\"user\"] 结构（RBAC 后） ------------------------------- 登录成功时设为 dict：{\"id\",\"username\",\"display_n"
+  },
+  "config.py": {
+   "loc": 422,
+   "layer": "L0 全局基座",
+   "deps": [
+    "core.db"
+   ],
+   "rdeps": [
+    "api/__init__.py",
+    "api/logs.py",
+    "api/storage.py",
+    "api/system.py",
+    "app.py",
+    "core/ai_secret.py",
+    "core/cdc/__init__.py",
+    "core/cdc/base.py",
+    "core/cdc/mysql_binlog.py",
+    "core/cdc/pg_wal.py",
+    "core/cdc/polling_base.py",
+    "core/cdc/rowlevel.py",
+    "core/clone_service.py",
+    "core/crypto_pool.py",
+    "core/data_mining.py",
+    "core/db.py",
+    "core/db_migrate.py",
+    "core/disaster_link.py",
+    "core/engines/__init__.py",
+    "core/engines/base.py",
+    "core/engines/dameng.py",
+    "core/engines/file.py",
+    "core/engines/kingbase.py",
+    "core/engines/mongodb.py",
+    "core/engines/mysql.py",
+    "core/engines/neo4j.py",
+    "core/engines/oracle.py",
+    "core/engines/postgresql.py",
+    "core/engines/redis.py",
+    "core/engines/sqlserver.py",
+    "core/ferry_inbox.py",
+    "core/global_dedup.py",
+    "core/hetero_convert.py",
+    "core/itsm.py",
+    "core/lifecycle.py",
+    "core/logging_setup.py",
+    "core/logical_full.py",
+    "core/migration.py",
+    "core/models.py",
+    "core/notifier.py",
+    "core/oplog.py",
+    "core/rbac.py",
+    "core/remote_dump.py",
+    "core/restore_verify.py",
+    "core/rt_backup/db_rt.py",
+    "core/rt_backup/file_rt.py",
+    "core/rt_backup/health.py",
+    "core/rt_backup/pitr.py",
+    "core/rt_backup/repo.py",
+    "core/rt_backup/supervisor.py",
+    "core/rt_backup/types.py",
+    "core/rt_backup/watchers/__init__.py",
+    "core/rt_backup/watchers/base.py",
+    "core/scheduler.py",
+    "core/storage.py",
+    "core/sync.py",
+    "core/vm/__init__.py",
+    "init_db.py"
+   ],
+   "routes": [],
+   "symbols": [
+    "BACKUP_CMD_TIMEOUT",
+    "BACKUP_IDLE_TIMEOUT",
+    "BACKUP_MODE_DISPLAY_NAMES",
+    "BACKUP_REMOTE_KEEP_DONE",
+    "BACKUP_REMOTE_STAGE",
+    "BACKUP_RESUME_ENABLED",
+    "BACKUP_RESUME_TTL",
+    "BACKUP_RETRY_DELAY",
+    "BACKUP_RETRY_INTERVAL",
+    "BACKUP_RETRY_MAX",
+    "BACKUP_ROOT",
+    "BACKUP_ROOT_DEFAULT",
+    "BACKUP_ROOT_ENV",
+    "BACKUP_ROOT_SETTING_KEY",
+    "BACKUP_STABLE_SECS",
+    "BACKUP_STATUS_DISPLAY_NAMES",
+    "BACKUP_TYPE_DISPLAY_NAMES",
+    "CLONE_AUTO_APPROVE",
+    "COMPRESS_BY_DEFAULT",
+    "DB_DISPLAY_NAMES",
+    "DEFAULT_PORTS",
+    "DEFAULT_RETENTION_COUNT",
+    "DEFAULT_RETENTION_DAYS",
+    "DEMO_MODE",
+    "FULL_INSTANCE_WORK_DIR",
+    "INSTANCE_DIR",
+    "LOGIN_LOCK_MINUTES",
+    "LOGIN_MAX_FAILS",
+    "LOG_DIR",
+    "MARIABACKUP_PATH",
+    "META_DB_PATH",
+    "NOTIFY_DEFAULTS",
+    "REMOTE_DEFAULTS",
+    "RESTORE_PARALLEL",
+    "RT_ALERT_SUPPRESS_MIN",
+    "RT_ALLOW_SIMULATED_FALLBACK",
+    "RT_BACKUP_ENABLED",
+    "RT_DB_FLUSH_LOGS",
+    "RT_DB_LOG_RETENTION_DAYS",
+    "RT_DB_MODE",
+    "RT_DB_RPO_TARGET_SEC",
+    "RT_DB_SEAL_INTERVAL_SEC",
+    "RT_DB_STALL_TICKS",
+    "RT_DISK_QUOTA_GB",
+    "RT_FILE_DEBOUNCE_SEC",
+    "RT_FILE_INTERVAL_SEC",
+    "RT_FILE_RETENTION_DAYS",
+    "RT_FILE_ROOT",
+    "RT_FILE_RPO_TARGET_SEC",
+    "RT_FILE_WATCHER",
+    "RT_LOCK_FILE",
+    "RT_LOCK_STALE_SEC",
+    "RT_LOG_ROOT",
+    "RT_MAX_RESTART",
+    "RT_PG_CREATE_SLOT",
+    "RT_RESTART_BACKOFF_SEC",
+    "RT_RPO_ALERT_MIN_SEC",
+    "RT_SUPERVISOR_TICK_SEC",
+    "RT_UPLOAD_BATCH_MB",
+    "RT_UPLOAD_INTERVAL_MIN",
+    "SCHEDULER_ENABLED",
+    "SECRET_KEY",
+    "SESSION_TIMEOUT",
+    "SUPPORTED_DB_TYPES",
+    "WEB_HOST",
+    "WEB_PASSWORD",
+    "WEB_PORT",
+    "WEB_THREADED",
+    "WEB_USERNAME",
+    "XTRABACKUP_24_PATH",
+    "XTRABACKUP_8_PATH",
+    "_BACKUP_ROOT_ORIGIN",
+    "_BACKUP_ROOT_ORIGIN_LABELS",
+    "_CFG_FILE",
+    "_CONFIG_FILE_KEYS",
+    "_DERIVED_ENV_OVERRIDE",
+    "_MOUNT_PSEUDO_FS",
+    "backup_root_info",
+    "backup_root_persistence",
+    "backup_root_source",
+    "backup_root_source_label",
+    "get_backup_root",
+    "load_backup_root_from_db",
+    "set_backup_root"
+   ],
+   "doc": "全局配置。 优先级：代码默认值 < 环境变量 < config.json（若存在）。 生产环境请通过环境变量或 config.json 覆盖 SECRET_KEY / WEB_PASSWORD 等敏感项， 不要直接把明文提交到版本库。"
+  },
+  "init_db.py": {
+   "loc": 13,
+   "layer": "L1 入口装配",
+   "deps": [
+    "config",
+    "core.db"
+   ],
+   "rdeps": [],
+   "routes": [],
+   "symbols": [],
+   "doc": "初始化元数据数据库（SQLite）：创建任务、记录、恢复、日志等表。 用法： python init_db.py"
+  }
+ },
+ "templates": {
+  "templates/agent.html": {
+   "loc": 128,
+   "apis": []
+  },
+  "templates/alert.html": {
+   "loc": 302,
+   "apis": []
+  },
+  "templates/base.html": {
+   "loc": 97,
+   "apis": []
+  },
+  "templates/clone.html": {
+   "loc": 79,
+   "apis": []
+  },
+  "templates/dashboard.html": {
+   "loc": 505,
+   "apis": []
+  },
+  "templates/datamining.html": {
+   "loc": 363,
+   "apis": []
+  },
+  "templates/deploy.html": {
+   "loc": 373,
+   "apis": []
+  },
+  "templates/drills.html": {
+   "loc": 152,
+   "apis": []
+  },
+  "templates/drlink.html": {
+   "loc": 180,
+   "apis": []
+  },
+  "templates/file_backup.html": {
+   "loc": 264,
+   "apis": []
+  },
+  "templates/inspection.html": {
+   "loc": 54,
+   "apis": []
+  },
+  "templates/login.html": {
+   "loc": 297,
+   "apis": []
+  },
+  "templates/logs.html": {
+   "loc": 689,
+   "apis": [
+    "/api/diagnostics/export",
+    "/api/logs/files",
+    "/api/logs/locations",
+    "/api/logs/operations/purge",
+    "/api/logs/record/"
+   ]
+  },
+  "templates/migration.html": {
+   "loc": 194,
+   "apis": []
+  },
+  "templates/operations.html": {
+   "loc": 130,
+   "apis": []
+  },
+  "templates/protection.html": {
+   "loc": 163,
+   "apis": []
+  },
+  "templates/records.html": {
+   "loc": 226,
+   "apis": []
+  },
+  "templates/restore.html": {
+   "loc": 240,
+   "apis": []
+  },
+  "templates/restore_records.html": {
+   "loc": 41,
+   "apis": []
+  },
+  "templates/restore_verify.html": {
+   "loc": 151,
+   "apis": []
+  },
+  "templates/settings.html": {
+   "loc": 337,
+   "apis": [
+    "/api/webhooks"
+   ]
+  },
+  "templates/storage.html": {
+   "loc": 455,
+   "apis": []
+  },
+  "templates/sync.html": {
+   "loc": 362,
+   "apis": []
+  },
+  "templates/vdb.html": {
+   "loc": 28,
+   "apis": []
+  },
+  "templates/plugins.html": {
+   "loc": 216,
+   "apis": []
+  },
+  "templates/data_compare.html": {
+   "loc": 27,
+   "apis": []
+  },
+  "templates/users.html": {
+   "loc": 208,
+   "apis": [
+    "/api/rbac/permissions",
+    "/api/rbac/users",
+    "/api/rbac/users/${editing.id}",
+    "/api/rbac/users/${id}",
+    "/api/rbac/users/${pwdId}/password"
+   ]
+  },
+  "templates/tasks.html": {
+   "loc": 461,
+   "apis": []
+  },
+  "templates/vm.html": {
+   "loc": 273,
+   "apis": []
+  },
+  "templates/_rt_panel.html": {
+   "loc": 393,
+   "apis": []
+  },
+  "templates/_cdc_panel.html": {
+   "loc": 142,
+   "apis": []
+  },
+  "templates/realtime.html": {
+   "loc": 42,
+   "apis": []
+  },
+  "templates/_db_adapters_panel.html": {
+   "loc": 400,
+   "apis": [
+    "/api/db-adapters",
+    "/api/db-adapters/${editing.id}",
+    "/api/db-adapters/${id}",
+    "/api/db-adapters/${id}/toggle",
+    "/api/db-adapters/${testingId}/test",
+    "/api/db-adapters/preview",
+    "/api/db-adapters/templates"
+   ]
+  }
+ },
+ "js": {
+  "static/js/bkp-core.js": {
+   "loc": 183,
+   "apis": [
+    "/api/rbac/me"
+   ]
+  },
+  "static/js/bootstrap.bundle.min.js": {
+   "loc": 7,
+   "apis": []
+  },
+  "static/js/operations.js": {
+   "loc": 364,
+   "apis": [
+    "/api/meta",
+    "/api/records/overrun-stats",
+    "/api/settings/backup-quality-thresholds"
+   ]
+  },
+  "static/js/restore_verify.js": {
+   "loc": 245,
+   "apis": [
+    "/api/restore-test-reports",
+    "/api/restore-test-reports/",
+    "/api/restore-verify-policies",
+    "/api/restore-verify-policies/",
+    "/api/restore-verify-stats",
+    "/api/tasks"
+   ]
+  },
+  "static/js/sync.js": {
+   "loc": 615,
+   "apis": [
+    "/api/sync-tasks",
+    "/api/sync-tasks/"
+   ]
+  },
+  "static/js/plugins.js": {
+   "loc": 674,
+   "apis": [
+    "/api/jdbc/drivers",
+    "/api/jdbc/drivers/",
+    "/api/jdbc/drivers/upload",
+    "/api/jdbc/status",
+    "/api/jdbc/test-connection",
+    "/api/meta",
+    "/api/plugins${hostParam}",
+    "/api/plugins/batch-install",
+    "/api/plugins/hosts",
+    "/api/plugins/recommend${hostParam}",
+    "/api/plugins/recommend${recParam}"
+   ]
+  },
+  "static/js/data_compare.js": {
+   "loc": 314,
+   "apis": [
+    "/api/data-compare-reports",
+    "/api/data-compare-reports/",
+    "/api/data-compare-stats",
+    "/api/data-compare-tasks",
+    "/api/data-compare-tasks/"
+   ]
+  },
+  "static/js/data_compare_preact.js": {
+   "loc": 669,
+   "apis": [
+    "/api/data-compare-reports",
+    "/api/data-compare-reports/",
+    "/api/data-compare-reports/${report.id}/repair",
+    "/api/data-compare-stats",
+    "/api/data-compare-tasks",
+    "/api/data-compare-tasks/"
+   ]
+  },
+  "static/js/cdc.js": {
+   "loc": 222,
+   "apis": [
+    "/api/cdc/xxx"
+   ]
+  },
+  "static/js/app.js": {
+   "loc": 7731,
+   "apis": [
+    "/api/agent/chat",
+    "/api/agent/confirm",
+    "/api/agent/sessions",
+    "/api/agent/sessions/",
+    "/api/alerts/config",
+    "/api/alerts/model/status",
+    "/api/alerts/model/test",
+    "/api/alerts/predictions",
+    "/api/alerts/run",
+    "/api/clone",
+    "/api/clone/",
+    "/api/dashboard",
+    "/api/datamining/export",
+    "/api/datamining/exports",
+    "/api/datamining/exports/",
+    "/api/datamining/preview-rules",
+    "/api/datamining/records/",
+    "/api/datamining/rule-templates",
+    "/api/db-migrate",
+    "/api/db-migrate/",
+    "/api/dedup/stats",
+    "/api/deploy",
+    "/api/deploy/${depId}",
+    "/api/deploy/${depId}/run",
+    "/api/deploy/${id}",
+    "/api/deploy/${id}/log",
+    "/api/deploy/${id}/run",
+    "/api/deploy/upload",
+    "/api/disaster-links",
+    "/api/disaster-links/",
+    "/api/disaster-links/sources",
+    "/api/drills",
+    "/api/drills/",
+    "/api/drills/schedule",
+    "/api/drills/schedule/run",
+    "/api/hosts",
+    "/api/hosts/${id}",
+    "/api/hosts/${id}/test",
+    "/api/inspection/records",
+    "/api/inspection/run",
+    "/api/inspection/schedule",
+    "/api/jdbc/test-connection",
+    "/api/lifecycle",
+    "/api/lifecycle/config",
+    "/api/lifecycle/run",
+    "/api/meta",
+    "/api/migration",
+    "/api/migration/",
+    "/api/notify-config",
+    "/api/notify-config/test",
+    "/api/policy",
+    "/api/policy/",
+    "/api/pool-crypto",
+    "/api/pool-crypto/test",
+    "/api/records",
+    "/api/records/${id}",
+    "/api/records/${r.id}/download",
+    "/api/records/enriched",
+    "/api/restores",
+    "/api/restores/object",
+    "/api/restores/pitr",
+    "/api/rt/control",
+    "/api/rt/health",
+    "/api/rt/preview",
+    "/api/rt/recover",
+    "/api/rt/status",
+    "/api/rt/tasks",
+    "/api/rt/tasks/",
+    "/api/scheduler",
+    "/api/scheduler/reload",
+    "/api/storage/local-root",
+    "/api/storage/replication-config",
+    "/api/storage/targets",
+    "/api/storage/targets/",
+    "/api/storage/types",
+    "/api/storage/usage",
+    "/api/sync/records",
+    "/api/sync/tasks",
+    "/api/sync/tasks/${id}",
+    "/api/sync/tasks/${id}/run",
+    "/api/tasks",
+    "/api/tasks/${id}",
+    "/api/tasks/${id}/list-databases",
+    "/api/tasks/${id}/list-tables",
+    "/api/tasks/${id}/run",
+    "/api/tasks/import",
+    "/api/vdb",
+    "/api/vdb/${id}",
+    "/api/vdb/clone"
+   ]
+  },
+  "static/js/datamining.js": {
+   "loc": 489,
+   "apis": [
+    "/api/datamining/scan",
+    "/api/datamining/scans",
+    "/api/datamining/scans/",
+    "/api/datamining/sensors"
+   ]
+  },
+  "static/js/vm.js": {
+   "loc": 400,
+   "apis": [
+    "/api/vm/hypervisors",
+    "/api/vm/hypervisors/",
+    "/api/vm/hypervisors/test",
+    "/api/vm/jobs",
+    "/api/vm/jobs/",
+    "/api/vm/jobs/reap",
+    "/api/vm/protect",
+    "/api/vm/protected",
+    "/api/vm/protected/",
+    "/api/vm/providers",
+    "/api/vm/recovery-points",
+    "/api/vm/recovery-points/"
+   ]
+  }
+ }
+}

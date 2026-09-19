@@ -29,6 +29,8 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 > · [离线交付与运维手册](docs/offline_ops_manual_20260917.md)（安装、上线检查清单、排障地图、不改代码可调整项）
 > · [产品设计说明书](docs/product_design_spec_20260916.md)（领域模型与产品化差距清单 G1–G13）
 
+> **二次开发 / 排障前先读**：[代码图谱](docs/code_graph.md)（由 `scripts/gen_code_graph.py` 自动生成，零第三方依赖）——分层架构与模块依赖、枢纽模块与循环/越层依赖体检、**332 条 REST 路由索引**、页面→JS→接口链路、元数据库表访问热点、关键业务链路，以及「想改 X 先看哪些文件」。重生成：`python scripts/gen_code_graph.py`（结构漂移用 `--diff`，CI 卡口用 `--strict`）。
+
 ## 平台特色
 
 - **AI 原生**：AI 助手可自然语言驱动备份/巡检/查询，自动做根因分析、修复建议与告警降噪；预校验与类型映射由 AI 辅助，把"备份失效"和"异构不兼容"挡在发生之前。
@@ -498,6 +500,8 @@ docker build -t backup-platform:local .
   - **备份前空间预检（真实生效）**：用数据库自身数据估算本次落盘量，明显不够就**在动手前终止**，不让用户跑几分钟才失败。估算口径为「逻辑统计 vs InnoDB 物理文件大小逐库取大者」——只用 `information_schema` 的 `DATA_LENGTH` 会严重低估（InnoDB 统计是采样值且刷新滞后，实测刚灌 4MB 的表只报 16KB）；物理大小按版本兼容查询（MySQL 8.0+ 用 `innodb_tablespaces`，5.6/5.7 与 MariaDB 用 `innodb_sys_tablespaces`，PG 系用 `pg_database_size()` 本身就是真实占用）。
   - **第二道防线**：逐库 dump 之间检查磁盘余量，若已放不下下一个库就**就地终止并说明进度**（已完成 n/N 个库），而不是把设备写满才炸。
   - **失败文案按原因分流**：未纳管 SSH 时的兜底提示不再一律写「请纳管 SSH 备份机」——磁盘满给出清空间指引、客户端缺失给出工具安装/`tool_path` 指引、连接认证失败给出地址端口账号口令核对指引，其余才提 SSH。
+- **新增开发者工具：代码图谱生成器**（`scripts/gen_code_graph.py`，纯标准库、零第三方依赖、只 `ast.parse` 不执行被分析代码）：一次扫描产出 `docs/code_graph.md`（人读）+ `docs/code_graph.json`（机器读），覆盖分层架构与模块依赖、枢纽模块、循环/越层依赖体检、332 条 REST 路由索引（METHOD+URL+handler）、页面→JS→接口链路、元数据库表访问热点、关键业务链路与「想改 X 先看哪些文件」。人工注解（链路/指引）每次生成都做存在性校验，失效即标 ⚠；`--diff` 看结构漂移，`--strict` 可在 CI 中拦截不可信数据（当前 ERROR 0）。用于替代"改一个功能要先通读几万行代码"。
+- **可重复执行的回归脚本**：新增 `tests/e2e_v1411_fixes.py`（真实执行、不仿真，10 项断言：单文件源 / 目录源 / 排除规则生效 / 源不存在提前失败且原因非空 / 目标分区写满报真实 Errno 28；MySQL 全实例成功产物校验含中文 / 2MB 工作目录**备份前**终止 / 连接失败原因分流 / 估算失效时第二道防线），实测 **10/10 通过**（免密 MySQL 实例 + tmpfs 真实制造 ENOSPC）。运行：`.venv/bin/python tests/e2e_v1411_fixes.py`（可用 `--mysql-host/--mysql-port/--mysql-pwd` 指定实例）。
 - **回归**：文件备份端到端 **13/13 通过**（单文件→远端、目录+排除规则、源不存在、单文件→本地、打包前文件被删五类场景，真实 SSH 环境 192.168.220.137）；全实例端到端 **12/12 通过**（含 2MB tmpfs 上真实制造的 ENOSPC，验证「备份前终止」与写满时的诊断均生效）。全量 pytest 与 `git archive HEAD` 快照同命令基线对比 **170 failed / 292 passed / 1 skipped / 30 errors，与基线完全一致，零回归**（failed 项均为既有用例间共享临时库导致的存量冲突）。
 
 ### v1.4.10（2026-09-17）
