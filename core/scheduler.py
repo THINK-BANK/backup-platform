@@ -1106,6 +1106,46 @@ def _register_ferry(sched):
     _logger.info("[ferry] 已注册摆渡收件箱扫描任务（10 分钟）")
 
 
+# ------------------------- 备份产物保留策略定期清理 -------------------------
+def _cleanup_job_wrapper():
+    """调度触发的备份保留清理：运行 core.backup_cleanup.run_cleanup()。
+
+    是否真正清理由 cleanup_enabled 开关 + 每个任务的 retention_days /
+    retention_count 决定；keep_min 兜底保证每任务至少留住最近 N 份成功备份。
+    """
+    try:
+        from core import backup_cleanup
+        if not backup_cleanup.get_config().get("enabled", True):
+            _logger.debug("[cleanup] 定期清理已关闭，跳过本次执行")
+            return
+        report = backup_cleanup.run_cleanup()
+        _logger.info("[cleanup] 定期清理: 任务 %s / 记录 %s / 删文件 %s / 释放 %.1f MB",
+                     report.get("tasks"), report.get("records"),
+                     report.get("deleted_files"),
+                     (report.get("freed_bytes") or 0) / 1048576.0)
+    except Exception:
+        _logger.exception("[cleanup] 定期清理异常")
+
+
+def _register_cleanup(sched):
+    """注册备份保留策略定期清理任务（默认每日 03:10）。"""
+    from apscheduler.triggers.cron import CronTrigger
+    from core import backup_cleanup
+    cron = db.get_system_config("cleanup_cron") or backup_cleanup.DEFAULT_CRON
+    try:
+        trig = CronTrigger.from_crontab(cron)
+    except Exception as e:
+        _logger.warning("[cleanup] cron 非法(%s)，回退默认", e)
+        trig = CronTrigger.from_crontab(backup_cleanup.DEFAULT_CRON)
+    try:
+        sched.remove_job("backup_cleanup")
+    except Exception:
+        pass
+    sched.add_job(_cleanup_job_wrapper, trig, id="backup_cleanup",
+                  replace_existing=True, misfire_grace_time=86400)
+    _logger.info("[cleanup] 已注册备份保留清理任务，cron=%s", cron)
+
+
 # ------------------------- Phase 4：季度演练排程 -------------------------
 def _drill_schedule_job_wrapper():
     """调度触发的季度演练：运行 DrillEngine.run_scheduled_drill()。
@@ -1417,6 +1457,7 @@ def start_scheduler():
     _register_synthesize(_scheduler)
     _register_gfs(_scheduler)
     _register_ferry(_scheduler)
+    _register_cleanup(_scheduler)
     _register_rt_backup(_scheduler)
     _scheduler.start()
     _logger.info("调度器已启动，已注册 %d 个任务", len(_scheduler.get_jobs()))
@@ -1478,6 +1519,11 @@ def _reload_scheduler_locked():
     _register_restore_verify(_scheduler)
     _register_data_compare(_scheduler)
     _register_synthesize(_scheduler)
+    # gfs / 摆渡 / 保留清理此前只在首次启动时注册，重载后会被静默丢弃——
+    # 这里补齐，保证 reload_scheduler 后各周期 job 依然存在。
+    _register_gfs(_scheduler)
+    _register_ferry(_scheduler)
+    _register_cleanup(_scheduler)
     # RT 周期任务幂等重注册；Supervisor 主循环 tick 已保留，不重启守护
     if config.RT_BACKUP_ENABLED:
         _register_rt_periodic_jobs(_scheduler)

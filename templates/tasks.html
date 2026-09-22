@@ -18,6 +18,8 @@
     <div class="page-sub">配置数据库连接、备份类型与调度策略</div>
   </div>
   <button class="btn btn-primary" id="newTaskBtn"><i class="bi bi-plus-lg"></i> 新建任务</button>
+  <button class="btn btn-outline-warning btn-sm" id="cleanupBtn"
+          title="按每个任务的备份保留天数/份数，定期清理过期备份产物"><i class="bi bi-eraser"></i> 定期清理</button>
   <button class="btn btn-outline-secondary btn-sm" onclick="refreshTasks()" title="刷新"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
   <a class="btn btn-outline-info btn-sm" href="/api/tasks/template?type=db" title="下载CSV模板"><i class="bi bi-file-earmark-spreadsheet"></i> 模板</a>
   <button class="btn btn-outline-success btn-sm" onclick="importTasksCsv()" title="批量导入CSV"><i class="bi bi-upload"></i> 导入</button>
@@ -285,6 +287,14 @@ gunzip -c $PLATFORM_BACKUP_FILE | mysql -h $PLATFORM_DB_HOST -u $PLATFORM_DB_USE
                     <div class="small text-muted" id="t_ssh_state"></div>
                   </div>
                 </div>
+                <div class="col-12">
+                  <label class="form-label">已纳管 SSH 备份机（可选）</label>
+                  <select class="form-select form-select-sm" id="t_ssh_host"></select>
+                  <div class="form-text">
+                    指定在已纳管主机上执行备份 / 恢复；留空 = 自动按数据库地址匹配纳管主机，
+                    匹配不到时再使用上方 SSH 凭据（未纳管也能执行）。
+                  </div>
+                </div>
                 <div class="col-12 mt-2">
                   <label class="form-label">备份命令所在目录（可选，手动兜底，全数据库类型生效）</label>
                   <input class="form-control form-control-sm font-monospace" id="t_tool_path"
@@ -454,6 +464,69 @@ gunzip -c $PLATFORM_BACKUP_FILE | mysql -h $PLATFORM_DB_HOST -u $PLATFORM_DB_USE
       <div class="modal-footer">
         <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
         <button class="btn btn-primary" id="taskSaveBtn">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 备份产物定期清理（按任务保留策略：保留天数 / 保留份数） -->
+<div class="modal fade" id="cleanupModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-eraser"></i> 备份产物定期清理</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-md-3">
+            <label class="form-label">每日自动清理</label>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="cl_enabled">
+              <label class="form-check-label">启用</label>
+            </div>
+            <div class="form-text" id="cl_last_run">上次执行：—</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">清理时间（cron）</label>
+            <input class="form-control form-control-sm" id="cl_cron" placeholder="10 3 * * *">
+            <div class="form-text">5 段：分 时 日 月 周</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">每任务最少保留</label>
+            <input type="number" min="0" class="form-control form-control-sm" id="cl_keep_min" value="1">
+            <div class="form-text">兜底份数，低于它一律不删</div>
+          </div>
+          <div class="col-md-3">
+            <label class="form-label">清理后处理</label>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="cl_purge">
+              <label class="form-check-label">同时删除备份记录</label>
+            </div>
+            <div class="form-text">不勾选则记录标记为「已清理（过期）」，保留审计轨迹</div>
+          </div>
+        </div>
+        <div class="alert alert-warning mt-3 mb-2 py-2 small">
+          判定依据：每个任务的<b>备份保留天数</b>（默认 30 天）与<b>保留份数</b>；两者都为空的任务<b>不会</b>被清理。
+          每任务最近的「最少保留」份成功备份无条件保留，<b>永远不会把最后一个可用备份删掉</b>。
+        </div>
+        <div class="d-flex gap-2 mb-2 flex-wrap">
+          <button class="btn btn-sm btn-outline-primary" id="cl_scan_btn"><i class="bi bi-search"></i> 扫描预览（不删数据）</button>
+          <button class="btn btn-sm btn-danger" id="cl_run_btn"><i class="bi bi-trash"></i> 立即清理</button>
+          <button class="btn btn-sm btn-outline-secondary" id="cl_save_btn"><i class="bi bi-check2"></i> 保存设置</button>
+          <span class="ms-auto small text-muted align-self-center" id="cl_summary"></span>
+        </div>
+        <div class="table-responsive" style="max-height:320px">
+          <table class="table table-sm align-middle mb-0">
+            <thead><tr>
+              <th>任务</th><th>类型</th><th>策略</th>
+              <th>现有成功备份</th><th>待清理</th><th>可释放</th>
+            </tr></thead>
+            <tbody id="cl_plan_body">
+              <tr><td colspan="6" class="text-muted">点击「扫描预览」查看将被清理的备份</td></tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

@@ -700,38 +700,76 @@
   }
 
   // ---------- 组合调度：按天勾选 + 时间 ⇄ cron/days ----------
+  // 【组合任务无法编辑的根因（已修）】页面实际元素 ID 是 t_incremental_days /
+  // t_incremental_time，而旧代码按前缀拼成了 t_inc_days / t_inc_time；缺失元素时
+  // BKP.$ 返回的是"万能代理对象"（真值），旧代码的 if (box) 判定为真，随后的
+  // querySelectorAll(...).forEach 拿到 undefined 抛 TypeError，直接打断
+  // openTaskModal → 编辑弹窗打不开且无任何提示（表现为"点了没反应"）。
+  // 修复三层：①用真实 DOM 的 getElementById 做候选 ID 解析（不碰代理对象）；
+  // ②对查询结果做类型保护；③打开弹窗的入口加 try/catch + toast。
+  // 候选 ID：前缀 t_inc / f_inc 同时容错了 xxx_inc_days 与 xxx_incremental_days 两种写法。
+  function _mixedIds(prefix, suffix) {
+    const alt = String(prefix || "").replace(/_inc$/, "_incremental");
+    return [prefix + "_" + suffix, alt + "_" + suffix];
+  }
+
+  /** 按候选 ID 取真实元素（缺失返回 null，绝不使用 BKP.$ 的代理对象）。 */
+  function _firstRealEl(ids) {
+    for (let i = 0; i < (ids || []).length; i++) {
+      try {
+        const el = document.getElementById(String(ids[i]).replace(/^#/, ""));
+        if (el) return el;
+      } catch (_) { /* 忽略，继续下一个候选 */ }
+    }
+    return null;
+  }
+
+  /** 取容器内所有 checkbox（永远返回真数组）。 */
+  function _checkboxesOf(el) {
+    try {
+      const nodes = el && el.querySelectorAll
+        ? el.querySelectorAll('input[type="checkbox"]') : null;
+      return (nodes && typeof nodes.length === "number")
+        ? Array.prototype.slice.call(nodes) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
   function _collectDays(prefix) {
-    // prefix: "t_full" / "t_inc" / "f_full" / "f_inc"
-    // 读取对应星期 checkbox 容器（id 形如 t_full_days / f_inc_days），返回数字数组(0=周一)
-    // 兼容 HTML 实际 ID（t_incremental_days 而非 t_inc_days）。
-    // 完全防御式：所有可能返回 undefined 的调用都包 try/catch + 类型检查，
-    // 避免任何边角情况让 _collectDays 抛出中断整个 saveTask。
-    const candidates = [prefix + "_days", prefix + "_incremental_days", "t_incremental_days"];
-    let box = null;
-    for (let i = 0; i < candidates.length; i++) {
-      box = $(candidates[i]);
-      if (box) break;
-    }
-    if (!box || typeof box.querySelectorAll !== "function") return [];
-    let nodes = null;
-    try { nodes = box.querySelectorAll('input[type="checkbox"]'); }
-    catch (_) { return []; }
-    if (!nodes || typeof nodes.length !== "number") return [];
+    // prefix: "t_full" / "t_inc" / "f_full" / "f_inc"，返回数字数组（0=周一 ... 6=周日）
+    const box = _firstRealEl(_mixedIds(prefix, "days"));
     const out = [];
-    for (let i = 0; i < nodes.length; i++) {
-      const n = nodes[i];
-      if (n && n.checked) {
-        const v = Number(n.value);
-        if (!Number.isNaN(v)) out.push(v);
-      }
-    }
+    _checkboxesOf(box).forEach((n) => {
+      if (!n || !n.checked) return;
+      const v = Number(n.value);
+      if (!Number.isNaN(v)) out.push(v);
+    });
     return out.sort((a, b) => a - b);
+  }
+
+  /** cron 第 5 段（星期）→ 平台天序（0=周一）。用于无 days 列的存量任务回填。 */
+  function _daysFromCron(expr) {
+    const parts = String(expr || "").trim().split(/\s+/);
+    if (parts.length < 5) return [];
+    const dow = parts[4];
+    if (!dow || dow === "*") return [0, 1, 2, 3, 4, 5, 6];
+    const nums = [];
+    dow.split(",").forEach((seg) => {
+      const m = /^(\d)(?:-(\d))?$/.exec(String(seg).trim());
+      if (!m) return;
+      const a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+      for (let i = a; i <= b && i <= 6; i++) nums.push(i);
+    });
+    // cron: 0=周日 1=周一 ... 6=周六 → 平台: 0=周一 ... 6=周日
+    return Array.from(new Set(nums.map((d) => (d + 6) % 7))).sort((a, b) => a - b);
   }
 
   function _buildMixedSub(prefix) {
     // 从「星期勾选 + 时间」生成子调度：type=cron, cron_expr="分 时 * * *", days="0,1,..."
     const days = _collectDays(prefix);
-    const time = $(prefix + "_time")?.value || "02:00";
+    const timeEl = _firstRealEl(_mixedIds(prefix, "time"));
+    const time = (timeEl && timeEl.value) || "02:00";
     const [hh, mm] = time.split(":").map((x) => x.padStart(2, "0"));
     if (!days.length) {
       return { type: "none", cron_expr: "", interval_minutes: null, days: "" };
@@ -745,30 +783,41 @@
   }
 
   function _fillMixedSub(prefix, task) {
-    // 回填：把 task.full_schedule_days / full_schedule_expr 还原为星期勾选 + 时间
-    const daysStr = (prefix === "t_full" ? task.full_schedule_days
-      : prefix === "t_inc" ? task.incremental_schedule_days
-      : prefix === "f_full" ? task.full_schedule_days
-      : task.incremental_schedule_days) || "";
+    // 回填：把 full_schedule_days / incremental_schedule_days 还原为星期勾选 + 时间
+    const isFull = String(prefix || "").indexOf("full") >= 0;
+    const daysKey = isFull ? "full_schedule_days" : "incremental_schedule_days";
+    const exprKey = isFull ? "full_schedule_expr" : "incremental_schedule_expr";
+    let daysStr = String((task && task[daysKey]) || "").trim();
+    const expr = String((task && task[exprKey]) || "").trim();
+    // 存量任务可能只有 cron_expr 而没有 days 列（如 CSV 导入 / 旧版本创建）：
+    // 从 cron 的星期段反推勾选，避免编辑后子调度被静默改成"手动"。
+    if (!daysStr && expr) daysStr = _daysFromCron(expr).join(",");
     const days = daysStr ? daysStr.split(",").map((s) => s.trim()).filter(Boolean) : [];
-    const box = $(prefix + "_days");
-    if (box) {
-      box.querySelectorAll('input[type="checkbox"]').forEach((c) => {
-        c.checked = days.includes(c.value);
-      });
-    }
-    const expr = (prefix === "t_full" ? task.full_schedule_expr
-      : prefix === "t_inc" ? task.incremental_schedule_expr
-      : prefix === "f_full" ? task.full_schedule_expr
-      : task.incremental_schedule_expr) || "2 2 * * *";
-    // 从 cron_expr "分 时 * * *" 解析时间（兼容 5 段）
+    const box = _firstRealEl(_mixedIds(prefix, "days"));
+    _checkboxesOf(box).forEach((c) => { c.checked = days.includes(String(c.value)); });
+    // 从 cron_expr "分 时 * * *" 解析时间（5 段 cron）
+    const timeEl = _firstRealEl(_mixedIds(prefix, "time"));
+    if (!timeEl) return;
     const parts = expr.split(/\s+/);
-    if (parts.length >= 2 && $(prefix + "_time")) {
-      $(prefix + "_time").value = `${parts[1].padStart(2, "0")}:${parts[0].padStart(2, "0")}`;
+    if (parts.length >= 2 && /^\d+$/.test(parts[0]) && /^\d+$/.test(parts[1])) {
+      timeEl.value = `${parts[1].padStart(2, "0")}:${parts[0].padStart(2, "0")}`;
+    } else {
+      timeEl.value = "02:00";
     }
   }
 
   function openTaskModal(task) {
+    // 防御式入口：任何元素缺失 / 数据结构异常都必须让用户"看得见"（toast），
+    // 而不是静默无响应（组合任务无法编辑的根因就是这样被掩盖的）。
+    try {
+      _openTaskModalInner(task);
+    } catch (e) {
+      console.error("[openTaskModal]", e);
+      toast("打开任务编辑框失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
+  }
+
+  function _openTaskModalInner(task) {
     if ($("taskForm")) $("taskForm").reset();
     $("t_password").value = "";
     if (task) {
@@ -1632,8 +1681,17 @@
     } catch (e) { toast(e.message, "danger"); }
   };
   window.editTask = async (id) => {
-    const t = await api("GET", `/api/tasks/${id}`);
-    openTaskModal(t);
+    try {
+      const t = await api("GET", `/api/tasks/${id}`);
+      if (!t || t.error) {
+        toast("加载任务失败：" + ((t && t.error) || "任务不存在"), "danger");
+        return;
+      }
+      openTaskModal(t);
+    } catch (e) {
+      console.error("[editTask]", e);
+      toast("打开编辑失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
   };
   window.delTask = async (id) => {
     const ok = await confirmDialog({
@@ -1662,6 +1720,7 @@
       if (newBtn) newBtn.onclick = () => openTaskModal(null);
       try { window.DB_HOSTS = await api("GET", "/api/hosts"); } catch (e) { window.DB_HOSTS = []; }
       if ($("t_ssh_host")) fillSshHostSelect($("t_ssh_host"), window.DB_HOSTS);
+      bindCleanupPanel();
     } catch (e) {
       console.error("[initTasks] 错误:", e);
       const box = document.getElementById("jsErrorBox");
@@ -1674,6 +1733,122 @@
   }
   // 页面级刷新
   window.refreshTasks = () => { loadTasks(); };
+
+  // ------------------------- 备份产物定期清理 -------------------------
+  // 按每个任务的「备份保留天数 / 保留份数」扫描并清理过期备份产物。
+  // 入口按钮：任务列表页工具栏「定期清理」；也可由调度器每日自动执行。
+  let cleanupModal = null;
+
+  function _cleanupModal() {
+    if (!cleanupModal && window.bootstrap && bootstrap.Modal) {
+      cleanupModal = new bootstrap.Modal($("cleanupModal"));
+    }
+    return cleanupModal;
+  }
+
+  function bindCleanupPanel() {
+    if ($("cleanupBtn")) $("cleanupBtn").onclick = openCleanupPanel;
+    if ($("cl_scan_btn")) $("cl_scan_btn").onclick = () => cleanupPlan();
+    if ($("cl_run_btn")) $("cl_run_btn").onclick = cleanupRun;
+    if ($("cl_save_btn")) $("cl_save_btn").onclick = cleanupSaveConfig;
+  }
+
+  function _cleanupParams() {
+    const km = Number($("cl_keep_min").value);
+    return { keep_min: Number.isFinite(km) ? km : 1 };
+  }
+
+  async function openCleanupPanel() {
+    const m = _cleanupModal();
+    if (!m) { toast("页面尚未就绪，请刷新后重试", "danger"); return; }
+    try {
+      const d = await api("GET", "/api/backup-cleanup");
+      const cfg = d.config || {};
+      $("cl_enabled").checked = !!cfg.enabled;
+      $("cl_cron").value = cfg.cron || "10 3 * * *";
+      $("cl_keep_min").value = (cfg.keep_min === null || cfg.keep_min === undefined) ? 1 : cfg.keep_min;
+      $("cl_purge").checked = !!cfg.purge_records;
+      const ls = cfg.last_summary || {};
+      $("cl_last_run").textContent = cfg.last_run_at
+        ? `上次执行：${cfg.last_run_at.slice(0, 16).replace("T", " ")}，清理 ${ls.records ?? 0} 条 / 释放 ${BKP.humanSize(ls.freed_bytes || 0)}`
+        : "上次执行：—";
+      $("cl_plan_body").innerHTML =
+        '<tr><td colspan="6" class="text-muted">正在扫描…</td></tr>';
+      $("cl_summary").textContent = "";
+      m.show();
+      await cleanupPlan();
+    } catch (e) {
+      console.error("[cleanup] 打开面板失败", e);
+      toast("加载清理配置失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
+  }
+
+  async function cleanupPlan() {
+    try {
+      const d = await api("POST", "/api/backup-cleanup/preview", _cleanupParams());
+      const plans = d.plans || [];
+      if (!plans.length) {
+        $("cl_plan_body").innerHTML =
+          '<tr><td colspan="6" class="text-muted">没有需要清理的备份（所有任务都在保留策略范围内）</td></tr>';
+        $("cl_summary").textContent = "";
+        return;
+      }
+      $("cl_plan_body").innerHTML = plans.map((p) => {
+        const policy = [];
+        if (p.retention_days > 0) policy.push(`保留 ${p.retention_days} 天`);
+        if (p.retention_count > 0) policy.push(`保留 ${p.retention_count} 份`);
+        return `<tr>
+          <td>${esc(p.task_name || ("任务 #" + p.task_id))}</td>
+          <td>${esc(p.db_type || "-")}</td>
+          <td class="small">${esc(policy.join(" / ") || "-")}</td>
+          <td>${p.total}</td>
+          <td><span class="badge bg-danger">${p.clean_count}</span> <span class="text-muted small">保留 ${p.keep}</span></td>
+          <td>${esc(BKP.humanSize(p.free_bytes || 0))}${(p.ghost_bytes ? ` <span class="text-muted small" title="另有 ${BKP.humanSize(p.ghost_bytes)} 的备份产物已不在磁盘（幽灵记录），本次只标记清理">(+${p.items.filter((i) => !i.has_file).length} 条产物已丢失)</span>` : "")}</td>
+        </tr>`;
+      }).join("");
+      const s = d.summary || {};
+      const ghost = s.missing_files
+        ? `，其中 ${s.missing_files} 条产物已不在磁盘（只标记、不释放空间）` : "";
+      $("cl_summary").textContent =
+        `共 ${s.tasks || 0} 个任务 / ${s.records || 0} 条待清理 / 可释放 ${BKP.humanSize(s.free_bytes || 0)}${ghost}`;
+    } catch (e) {
+      console.error("[cleanup] 扫描预览失败", e);
+      toast("扫描预览失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
+  }
+
+  async function cleanupRun() {
+    const sum = $("cl_summary").textContent || "";
+    if (!confirm("确认立即按保留策略清理过期备份？\n\n" + (sum || "建议先点「扫描预览」确认范围。") +
+      "\n\n被清理记录的产物文件会被删除且不可恢复。")) return;
+    try {
+      const d = await api("POST", "/api/backup-cleanup/run",
+        Object.assign({ dry_run: false }, _cleanupParams(),
+          { purge_records: !!$("cl_purge").checked }));
+      const r = d.report || {};
+      toast(`清理完成：${r.tasks} 个任务 / ${r.records} 条记录，删除文件 ${r.deleted_files} 个，释放 ${BKP.humanSize(r.freed_bytes || 0)}`, "success");
+      await cleanupPlan();
+    } catch (e) {
+      console.error("[cleanup] 执行失败", e);
+      toast("清理执行失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
+  }
+
+  async function cleanupSaveConfig() {
+    try {
+      const d = await api("POST", "/api/backup-cleanup/config", {
+        enabled: !!$("cl_enabled").checked,
+        cron: $("cl_cron").value,
+        keep_min: _cleanupParams().keep_min,
+        purge_records: !!$("cl_purge").checked,
+      });
+      const cfg = d.config || {};
+      toast("清理设置已保存" + (cfg.enabled ? `，每日 cron=${cfg.cron} 自动执行` : "，自动清理已关闭"), "success");
+    } catch (e) {
+      console.error("[cleanup] 保存配置失败", e);
+      toast("保存失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
+  }
 
   // 批量导入 CSV
   window.importTasksCsv = () => {
@@ -2818,6 +2993,16 @@
   }
 
   function openFileTaskModal(task) {
+    // 与 openTaskModal 同款防御式入口：失败必须 toast 可见，不能静默无响应。
+    try {
+      _openFileTaskModalInner(task);
+    } catch (e) {
+      console.error("[openFileTaskModal]", e);
+      toast("打开文件备份编辑框失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
+  }
+
+  function _openFileTaskModalInner(task) {
     $("fileTaskForm").reset();
     if (task) {
       $("fileTaskModalTitle").textContent = "编辑任务";
@@ -3026,8 +3211,17 @@
     } catch (e) { toast(e.message, "danger"); }
   };
   window.editFileTask = async (id) => {
-    const t = await api("GET", `/api/tasks/${id}`);
-    openFileTaskModal(t);
+    try {
+      const t = await api("GET", `/api/tasks/${id}`);
+      if (!t || t.error) {
+        toast("加载任务失败：" + ((t && t.error) || "任务不存在"), "danger");
+        return;
+      }
+      openFileTaskModal(t);
+    } catch (e) {
+      console.error("[editFileTask]", e);
+      toast("打开编辑失败：" + (e && e.message ? e.message : String(e)), "danger");
+    }
   };
   window.delFileTask = async (id) => {
     const ok = await confirmDialog({

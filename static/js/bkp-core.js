@@ -27,7 +27,12 @@ window.BKP = (function () {
         if (p === "classList") return { add: function(){}, remove: function(){}, toggle: function(){}, contains: function(){return false;} };
         if (p === "files") return [];
         if (p === "children" || p === "parentNode") return [];
-        if (p === "addEventListener" || p === "removeEventListener" || p === "setAttribute" || p === "dispatchEvent" || p === "click" || p === "focus" || p === "reset" || p === "show" || p === "hide" || p === "querySelectorAll" || p === "querySelector") return function(){};
+        if (p === "addEventListener" || p === "removeEventListener" || p === "setAttribute" || p === "dispatchEvent" || p === "click" || p === "focus" || p === "reset" || p === "show" || p === "hide") return function(){};
+        // 查询方法必须返回「可继续使用的空值」而不是 function(){}（返回 undefined）：
+        // 否则 el.querySelectorAll(...).forEach / el.querySelectorAll(...).length 会抛
+        // "Cannot read properties of undefined"，静默打断整个调用链（如 组合任务编辑弹窗打不开）。
+        if (p === "querySelectorAll") return function(){ return []; };
+        if (p === "querySelector") return function(){ return null; };
         // 文档结构操作方法：元素缺失时静默无操作，避免 "xxx is not a function" 打断整个页面逻辑
         if (p === "appendChild" || p === "append" || p === "insertBefore" || p === "removeChild" || p === "remove" || p === "replaceChildren") return function(){};
         if (p === "closest") return function(){ return null; };
@@ -166,7 +171,11 @@ window.BKP = (function () {
     var m = {
       success: ["badge-ok", "成功"], failed: ["badge-fail", "失败"],
       simulated: ["badge-sim", "仿真"], running: ["badge-run", "运行中"],
-      never: ["bg-secondary", "未运行"]
+      never: ["bg-secondary", "未运行"],
+      // 保留策略过期清理 / GFS 过期：留存审计轨迹（记录还在，产物已删）
+      expired: ["bg-secondary", "已清理（过期）"],
+      expired_cleanup: ["bg-secondary", "已清理（过期）"],
+      expired_gfs: ["bg-secondary", "已清理（GFS 过期）"]
     };
     var pair = m[s] || ["bg-secondary", s || "-"];
     return '<span class="badge ' + pair[0] + '">' + pair[1] + '</span>';

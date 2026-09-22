@@ -14,7 +14,7 @@ Oracle · MySQL · MariaDB · PostgreSQL · Kingbase（金仓） · DM（达梦�
 
 **备份 · 恢复 · PITR · 数据迁移 · 数据同步 · 数据对比 · 预校验 · 克隆 · 演练 · 巡检 · AI 告警**
 
-[![Version](https://img.shields.io/badge/Version-v1.4.12-0D9488)](#更新日志)
+[![Version](https://img.shields.io/badge/Version-v1.4.13-0D9488)](#更新日志)
 [![License](https://img.shields.io/badge/License-MIT-green)](#许可证)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
 [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED)](#docker-部署含离线运行)
@@ -487,6 +487,21 @@ docker build -t backup-platform:local .
 - 默认账号请立即修改（首登会标记 `must_change_password`）；生产环境建议限制来源 IP
 
 ## 更新日志
+
+### v1.4.13（2026-09-22）
+
+- **「组合 / 增量任务保存后无法编辑」根因修复（用户反馈，本次重点）**
+  - **现象**：任务是「组合（全量+增量）」或「增量」类型时，点「编辑」页面**毫无反应**、也不报错；全量任务正常。
+  - **根因三层叠加**：① 页面真实元素 id 是 `t_incremental_days` / `t_incremental_time`，旧 JS 按前缀拼成 `t_inc_days`；② `BKP.$` 对不存在的元素返回**万能代理对象**，参与 `if (el)` 判断恒为真，代码继续往下走；③ 该代理对象上调用 `querySelectorAll(...).forEach(...)` 得到 `undefined` → 抛 `TypeError`，而这条链路**没有任何 try/catch**，静默打断 `openTaskModal` —— 用户侧就是"点了没反应"。
+  - **修复**：`bkp-core.js` 让代理对象对 `querySelectorAll` 返回 `[]`、`querySelector` 返回 `null`（源头止血）；`app.js` 新增 `_mixedIds` / `_firstRealEl` / `_checkboxesOf` / `_daysFromCron`，用 `document.getElementById` 逐个取候选 id（含 `_inc_` → `_incremental_` 兼容），缺失时**从 cron 星期段反推按天勾选**；`OpenTaskModal` / `openFileTaskModal` / `editTask` / `editFileTask` **全部加 try/catch + toast**（同类问题今后会弹红色提示而非静默）。顺带补齐 `tasks.html` 缺失的 `t_ssh_host`（高级选项里"指定纳管主机"此前不生效）。
+- **新增「备份产物定期清理」**：备份一直积累会占满磁盘，而手工删风险极大。现在支持按**每个任务自己的保留天数/份数**自动回收，并提供 **dry-run 预览**。
+  - **安全设计（三层护栏）**：① **keep_min 兜底**——每任务最后 N 份成功备份无条件保留，永远不会清空最后一个可用备份；② **`_is_managed_path` 路径护栏**——只允许删备份根目录之内的文件，越界一律拒绝；③ **未配置保留天数的任务不会被清理**（不会被误伤）。
+  - **审计友好**：清理后默认把记录标记为 `expired_cleanup`（**保留审计轨迹**），可选才物理删行；"产物已不在磁盘"的幽灵记录只对齐账本，**不虚报释放空间**。
+  - **落地**：`core/backup_cleanup.py` + `api/backup_cleanup.py`（配置 / preview / preview\-\<id\> / run）+ `core/scheduler.py` 新增 `_register_cleanup()`（job `backup_cleanup`，cron 默认 `10 3 * * *`，**start 与 reload 两条路径均已注册**，顺带修掉此前 reload 会丢 gfs/ferry job 的缺陷）+ 数据库备份页工具栏黄色按钮「定期清理」与弹窗（开关 / cron / 最少保留 / 是否删记录 / 扫描预览 / 立即清理）+ `expired_cleanup`、`expired_gfs` 状态徽章。
+  - **验证**：`tests/test_backup_cleanup.py` **13 passed**（含 UI 契约静态回归）；本机手工跑过一次真实清理（24 条记录标记 `expired_cleanup`，其中 2 条真实删除了文件）。
+  - 默认：开关 **开启**、每任务最少保留 **1 份**、cron `10 3 * * *`；任务表单「保留天数」默认 30 天（`retention_count` 字段当前未在表单开放，需由管理员经接口设置）。
+- **交付《AIDBM 用户操作指导手册（详细版）》**（`docs/AIDBM_用户操作指导手册_详细版_20260922.md`，1668 行 / 26 章 + 4 附录）：逐 UI 事实编写（表单按**元素 id → 中文标签**抽取、取值范围取自 `<select>` option），覆盖全部 26 个功能页；含 **12 个场景剧本**（新库首日保护、误删单表、整库误 UPDATE 回到 10 分钟前、可停机/不停机搬迁、磁盘占满、交审计材料、季度演练、克隆测试库、备份失败怎么查、外包脱敏数据、值班例行清单）、11 类错误排障对照表、20 条 FAQ、cron 与关键字段 id 速查。快速版 `docs/AIDBM_用户操作指导手册_20260922.md` 保留给新人首日上手。
+- **完整说明见 [readme_20260922.md](readme_20260922.md)**。
 
 ### v1.4.12（2026-09-19）
 
